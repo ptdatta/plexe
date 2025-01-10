@@ -5,7 +5,7 @@ from typing import Union, List, Generator, Literal, Any
 from .constraints import Constraint
 from .callbacks import Callback
 from .instructions import Instruction
-from .errors import *
+from .exceptions import *
 
 
 class Function:
