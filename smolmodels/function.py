@@ -1,3 +1,6 @@
+# todo: this module is where the model class should be defined; the logic for the solution search, etc
+# todo: should be implemented in the `internal` package and imported
+
 from typing import Union, List, Generator, Literal, Any
 from .constraints import Constraint
 from .callbacks import Callback
