@@ -34,3 +34,14 @@ exclude = '''
   | dist
 )/
 '''
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = [
+    "E203",  # Whitespace before ':'
+    "E501",  # Line length
+    "E402",  # Imports not at top of file
+]
