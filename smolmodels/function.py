@@ -5,7 +5,7 @@ from typing import Union, List, Generator, Literal, Any
 from .constraints import Constraint
 from .callbacks import Callback
 from .instructions import Instruction
-from .exceptions import *
+from .exceptions import InsufficientSpecificationError
 
 
 class Function:
