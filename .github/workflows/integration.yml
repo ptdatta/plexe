@@ -11,8 +11,30 @@ on:
       - synchronize
       - reopened
 
-
 jobs:
+  linting:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry install
+
+      - name: Format Code with Black
+        run: poetry run black --check .
+
+      - name: Lint Code with Ruff
+        run: poetry run ruff check .
+
   run-tests:
     runs-on: ubuntu-latest
     steps:
