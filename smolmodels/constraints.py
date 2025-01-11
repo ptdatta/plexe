@@ -89,7 +89,8 @@ class Constraint:
         # Validate that condition is a callable
         if not callable(condition):
             raise TypeError(
-                "Condition must be a callable that takes two arguments (inputs, outputs) and returns a boolean.")
+                "Condition must be a callable that takes two arguments (inputs, outputs) and returns a boolean."
+            )
 
         # Optionally, check the callable signature (if you want stricter validation)
         signature = inspect.signature(condition)
@@ -125,7 +126,7 @@ class Constraint:
         """
         return Constraint(
             condition=lambda inputs, outputs: self.evaluate(inputs, outputs) and other.evaluate(inputs, outputs),
-            description=f"({self.description}) AND ({other.description})"
+            description=f"({self.description}) AND ({other.description})",
         )
 
     def __or__(self, other: "Constraint") -> "Constraint":
@@ -137,7 +138,7 @@ class Constraint:
         """
         return Constraint(
             condition=lambda inputs, outputs: self.evaluate(inputs, outputs) or other.evaluate(inputs, outputs),
-            description=f"({self.description}) OR ({other.description})"
+            description=f"({self.description}) OR ({other.description})",
         )
 
     def __invert__(self) -> "Constraint":
@@ -148,5 +149,5 @@ class Constraint:
         """
         return Constraint(
             condition=lambda inputs, outputs: not self.evaluate(inputs, outputs),
-            description=f"NOT ({self.description})"
+            description=f"NOT ({self.description})",
         )

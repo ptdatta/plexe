@@ -12,13 +12,7 @@ class Function:
     # A model is a function that is defined by its input and output domain/ranges, and its behaviour. These
     # aspects of a model are not 'mutable' in the sense that changing these means creating a new model, as
     # two models with a different description are not the same model.
-    def __init__(
-            self,
-            behaviour: str,
-            output_schema: dict,
-            input_schema: dict,
-            constraints: List[Constraint] = None
-    ):
+    def __init__(self, behaviour: str, output_schema: dict, input_schema: dict, constraints: List[Constraint] = None):
         self.behaviour = behaviour
         self.output_schema = output_schema
         self.input_schema = input_schema
@@ -32,11 +26,11 @@ class Function:
     # Note: we do not consider the dataset to be a property of the model itself
     # Note: there would also be an async version of this method
     def build(
-            self,
-            dataset: Union[str, Generator] = None,
-            instructions: List[Instruction] = None,  # these are "hints" that can be followed during training
-            callbacks: List[Callback] = None,  # these are functions that are called during training
-            isolation: Literal['local', 'subprocess', 'docker'] = 'local'  # this controls the sandboxing of training
+        self,
+        dataset: Union[str, Generator] = None,
+        instructions: List[Instruction] = None,  # these are "hints" that can be followed during training
+        callbacks: List[Callback] = None,  # these are functions that are called during training
+        isolation: Literal["local", "subprocess", "docker"] = "local",  # this controls the sandboxing of training
     ) -> None:
         pass
 
