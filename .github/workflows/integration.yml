@@ -29,8 +29,11 @@ jobs:
           pip install poetry
           poetry install
 
-      - name: Check Code Style
+      - name: Format Code with Black
         run: poetry run black --check .
+
+      - name: Lint Code with Ruff
+        run: poetry run ruff check .
 
   run-tests:
     runs-on: ubuntu-latest
