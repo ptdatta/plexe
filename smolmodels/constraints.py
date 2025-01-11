@@ -43,6 +43,10 @@ import inspect
 from typing import Any, Callable, Optional
 
 
+# todo: something to think about is how to represent constraints in cases where the model is not a
+# deterministic function, but rather represents a probability distribution P(Y|X), or even a distribution
+# P(X^Y) for a generative model. In these cases, a strict boolean constraint on input/output pairs may not
+# make sense.
 class Constraint:
     """
     Represents a constraint on a function's input/output behavior.
