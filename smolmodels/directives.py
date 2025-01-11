@@ -3,5 +3,5 @@
 # todo: we also need to figure out what an instruction really is 😂?
 
 
-class Instruction:
+class Directive:
     pass
