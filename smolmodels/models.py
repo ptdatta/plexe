@@ -1,11 +1,50 @@
 # smolmodels/models.py
-import random
+
+"""
+This module defines the `Model` class, which represents a machine learning model.
+
+A `Model` is characterized by a natural language description of its behaviour, structured input and output schemas,
+and optional constraints that the model must satisfy. This class provides methods for building the model, making
+predictions, and inspecting its state, metadata, and metrics.
+
+Key Features:
+- Behaviour: A natural language description of the model's purpose.
+- Input/Output Schema: Defines the structure and types of inputs and outputs.
+- Constraints: Rules that must hold true for input/output pairs.
+- Mutable State: Tracks the model's lifecycle, training metrics, and metadata.
+- Build Process: Integrates solution generation with directives and callbacks.
+
+Example Usage:
+    model = Model(
+        behaviour="Given a dataset of house features, predict the house price.",
+        output_schema={"price": float},
+        input_schema={
+            "bedrooms": int,
+            "bathrooms": int,
+            "square_footage": float
+        }
+    )
+
+    model.build(dataset="houses.csv", directives=[Directive("Optimize for memory usage")])
+
+    prediction = model.predict({"bedrooms": 3, "bathrooms": 2, "square_footage": 1500.0})
+    print(prediction)
+
+"""
+
 from typing import Union, List, Generator, Literal, Any
+from enum import Enum
 
 from smolmodels.callbacks import Callback
 from smolmodels.constraints import Constraint
 from smolmodels.directives import Directive
-from smolmodels.internal.solution_generation.generator import generate
+
+
+class ModelState(Enum):
+    DRAFT = "draft"
+    BUILDING = "building"
+    READY = "ready"
+    ERROR = "error"
 
 
 class Model:
@@ -30,9 +69,6 @@ class Model:
                 "bedrooms": int,
                 "bathrooms": int,
                 "square_footage": float,
-                "lot_size": float,
-                "year_built": int,
-                "location": str,
             }
         )
     """
@@ -58,11 +94,13 @@ class Model:
 
         # The model's mutable state is defined by these fields
         # todo: this is WIP, trying to flesh out what the model's internal state might look like
-        self.state = "draft"  # todo: this probably needs to be represented by a class, maybe an Enum
+        self.state = ModelState.DRAFT
         self.trainer = None  # todo: this is the object that was used to train the model, but does it need to exist?
         self.predictor = None  # todo: this is an object that loads the model and makes predictions
         self.metrics = dict()  # todo: this is a dictionary of metrics that the model has achieved
         self.metadata = dict()  # todo: this is a dictionary of metadata about the model
+        # todo: metrics should be chosen based on problem, model-type, etc.
+        # todo: initialise metadata, etc
 
     def build(
         self,
@@ -72,16 +110,7 @@ class Model:
         isolation: Literal["local", "subprocess", "docker"] = "local",
     ) -> None:
         # todo: implement properly, this is a placeholder
-        generate(
-            self.behaviour,
-            self.input_schema,
-            self.output_schema,
-            self.constraints,
-            dataset,
-            directives,
-            callbacks,
-            isolation,
-        )
+        raise NotImplementedError("Generation of the model is not yet implemented.")
 
     def predict(self, x: Any) -> Any:
         """
@@ -90,12 +119,56 @@ class Model:
         :return: output of the model
         """
         # todo: this is a placeholder, implement the actual model prediction logic
-        return random.randint(0, max(len(self.behaviour), x))
+        if self.state != ModelState.READY:
+            raise RuntimeError("The model is not ready for predictions.")
+        return self.predictor.predict(x)
 
-    def __call__(self, x: Any) -> Any:
+    def get_state(self) -> ModelState:
         """
-        Call the model with input x and return the output.
-        :param x: input to the model
-        :return: output of the model
+        Return the current state of the model.
+        :return: the current state of the model
         """
-        return self.predict(x)
+        return self.state
+
+    def get_metadata(self) -> dict:
+        """
+        Return metadata about the model.
+        :return: metadata about the model
+        """
+        return self.metadata
+
+    def get_metrics(self) -> dict:
+        """
+        Return metrics about the model.
+        :return: metrics about the model
+        """
+        return self.metrics
+
+    def describe(self) -> dict:
+        """
+        Return a human-readable description of the model.
+        :return: a human-readable description of the model
+        """
+        return {
+            "behaviour": self.behaviour,
+            "output_schema": self.output_schema,
+            "input_schema": self.input_schema,
+            "constraints": [str(constraint) for constraint in self.constraints],
+            "state": self.state,
+            "metadata": self.metadata,
+            "metrics": self.metrics,
+        }
+
+    def review(self) -> str:
+        """
+        Return a natural language review of the model.
+        :return: a review of the model
+        """
+        raise NotImplementedError("Review functionality is not yet implemented.")
+
+    def suggest(self) -> List[Directive]:
+        """
+        Suggest directives for improving the model.
+        :return: a list of directives
+        """
+        raise NotImplementedError("Suggestion functionality is not yet implemented.")
