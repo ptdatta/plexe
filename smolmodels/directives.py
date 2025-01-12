@@ -1,6 +1,6 @@
 # smolmodels.directives.py
 """
-This module defines the `Directive` class, which represents instructions that guide the model
+This module defines the `Directive` class, which represents technical instructions that guide the model
 generation process in the `smolmodels` library.
 
 Directives consist of:
