@@ -32,8 +32,8 @@ Example Usage:
 
 """
 
-from typing import Union, List, Generator, Literal, Any
 from enum import Enum
+from typing import Union, List, Generator, Literal, Any
 
 from smolmodels.callbacks import Callback
 from smolmodels.constraints import Constraint
