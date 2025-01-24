@@ -31,14 +31,16 @@ Example Usage:
     print(prediction)
 
 """
-
+import pandas as pd
+import logging
 from enum import Enum
-from typing import Union, List, Generator, Literal, Any
+from typing import Dict, Optional, Union, List, Literal, Any
 from dataclasses import dataclass
 
 from smolmodels.callbacks import Callback
 from smolmodels.constraints import Constraint
 from smolmodels.directives import Directive
+from .internal.data_generation.generator import generate_data, DataGenerationRequest
 
 
 class ModelState(Enum):
@@ -48,11 +50,42 @@ class ModelState(Enum):
     ERROR = "error"
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class ModelReview:
     summary: str
     suggested_directives: List[Directive]
     # todo: this can be fleshed out further
+
+
+@dataclass
+class GenerationConfig:
+    """Configuration for data generation/augmentation"""
+
+    n_samples: int
+    augment_existing: bool = False
+    quality_threshold: float = 0.8
+
+    def __post_init__(self):
+        if self.n_samples <= 0:
+            raise ValueError("Number of samples must be positive")
+        if not 0 <= self.quality_threshold <= 1:
+            raise ValueError("Quality threshold must be between 0 and 1")
+
+    @classmethod
+    def from_input(cls, value: Union[int, Dict[str, Any]]) -> "GenerationConfig":
+        """Create config from either number or dictionary input"""
+        if isinstance(value, int):
+            return cls(n_samples=value)
+        elif isinstance(value, dict):
+            return cls(
+                n_samples=value["n_samples"],
+                augment_existing=value.get("augment_existing", False),
+                quality_threshold=value.get("quality_threshold", 0.8),
+            )
+        raise ValueError(f"Invalid generate_samples value: {value}")
 
 
 class Model:
@@ -99,6 +132,8 @@ class Model:
         self.output_schema = output_schema
         self.input_schema = input_schema
         self.constraints = constraints or []
+        self.training_data = None
+        self.synthetic_data = None
 
         # The model's mutable state is defined by these fields
         # todo: this is WIP, trying to flesh out what the model's internal state might look like
@@ -112,13 +147,54 @@ class Model:
 
     def build(
         self,
-        dataset: Union[str, Generator],
+        dataset: Optional[Union[str, pd.DataFrame]] = None,
         directives: List[Directive] = None,
+        generate_samples: Optional[Union[int, Dict[str, Any]]] = None,
         callbacks: List[Callback] = None,
         isolation: Literal["local", "subprocess", "docker"] = "local",
     ) -> None:
-        # todo: implement properly, this is a placeholder
-        raise NotImplementedError("Generation of the model is not yet implemented.")
+        try:
+            self.state = ModelState.BUILDING
+
+            # Handle existing dataset
+            if isinstance(dataset, str):
+                self.training_data = pd.read_csv(dataset)
+            elif isinstance(dataset, pd.DataFrame):
+                self.training_data = dataset.copy()
+
+            # Handle data generation if requested
+            if generate_samples is not None:
+                config = GenerationConfig.from_input(generate_samples)
+
+                request = DataGenerationRequest(
+                    intent=self.intent,
+                    input_schema=self.input_schema,
+                    output_schema=self.output_schema,
+                    n_samples=config.n_samples,
+                    augment_existing=config.augment_existing,
+                    quality_threshold=config.quality_threshold,
+                    existing_data=self.training_data,
+                )
+
+                self.synthetic_data = generate_data(request)
+
+                # Handle augmentation
+                if self.training_data is not None and config.augment_existing:
+                    self.training_data = pd.concat([self.training_data, self.synthetic_data], ignore_index=True)
+                else:
+                    self.training_data = self.synthetic_data
+
+            # Validate we have training data from some source
+            if self.training_data is None:
+                raise ValueError("No training data available. Provide dataset or generate_samples.")
+
+            # TODO: add solution generation logic here
+
+            self.state = ModelState.READY
+        except Exception as e:
+            self.state = ModelState.ERROR
+            logger.error(f"Error during model building: {str(e)}")
+            raise e
 
     def predict(self, x: Any) -> Any:
         """
