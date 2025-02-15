@@ -49,7 +49,7 @@ class InferenceCodeGenerator:
             )
         )
 
-    def fix_inference_code(self, inference_code: str, review: str, problems: str) -> str:
+    def fix_inference_code(self, inference_code: str, review: str, problems: str, model_id: str) -> str:
         """
         Fixes the inference code based on the review and identified problems.
 
@@ -71,6 +71,7 @@ class InferenceCodeGenerator:
                         inference_code=inference_code,
                         review=review,
                         problems=problems,
+                        model_id=model_id,
                     ),
                     response_format=FixResponse,
                 )
@@ -79,7 +80,13 @@ class InferenceCodeGenerator:
         return extract_code(response.code)
 
     def review_inference_code(
-        self, inference_code: str, input_schema: dict, output_schema: dict, training_code: str, problems: str = None
+        self,
+        inference_code: str,
+        input_schema: dict,
+        output_schema: dict,
+        training_code: str,
+        problems: str = None,
+        model_id: str = None,
     ) -> str:
         """
         Reviews the inference code to identify improvements and fix issues.
@@ -99,6 +106,7 @@ class InferenceCodeGenerator:
                 output_schema=output_schema,
                 training_code=training_code,
                 problems=problems,
+                model_id=model_id,
                 context="",  # todo: implement memory to provide as 'context'
             ),
         )

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "smolmodels"
-version = "0.6.0"
+version = "0.7.0"
 description = "A framework for building ML models from natural language"
 authors = [
     "marcellodebernardi <marcello.debernardi@outlook.com>",
@@ -45,6 +45,11 @@ torch = ">=2.0.0,<2.3.0"
 litellm = "^1.60.0"
 statsmodels = "^0.14.4"
 hypothesis = "^6.125.1"
+tokenizers = "^0.15.1"
+numpy = ">=1.23.2,<2.0.0"
+transformers = "4.35.2"
+accelerate = "0.24.1"
+safetensors = "^0.4.1"
 
 
 [tool.poetry.group.dev.dependencies]
