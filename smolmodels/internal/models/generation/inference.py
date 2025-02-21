@@ -5,7 +5,7 @@ This module provides functionality for generating inference code for machine lea
 """
 
 import json
-from typing import List, Dict
+from typing import List, Dict, Type
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -36,12 +36,12 @@ class InferenceCodeGenerator:
             self.provider.query(
                 system_message=config.code_generation.prompt_inference_base.safe_substitute(),
                 user_message=config.code_generation.prompt_inference_model_loading.safe_substitute(
-                    training_code=training_code
+                    training_code=training_code, filedir=model_dir.as_posix()
                 ),
             )
         )
 
-    def _generate_preprocessing(self, input_schema: dict, training_code: str) -> str:
+    def _generate_preprocessing(self, input_schema: Type[BaseModel], training_code: str) -> str:
         """
         Generate code for preprocessing input data before prediction.
 
@@ -53,28 +53,28 @@ class InferenceCodeGenerator:
             self.provider.query(
                 system_message=config.code_generation.prompt_inference_base.safe_substitute(),
                 user_message=config.code_generation.prompt_inference_preprocessing.safe_substitute(
-                    input_schema=input_schema, training_code=training_code
+                    input_schema=input_schema.model_fields, training_code=training_code
                 ),
             )
         )
 
     def _generate_prediction(
-        self, output_schema: dict, training_code: str, model_loading_code: str, preprocessing_code: str
+        self, output_schema: Type[BaseModel], training_code: str, model_loading_code: str, preprocessing_code: str
     ) -> str:
         """
         Generate code for making predictions with the loaded model.
 
-        :param output_schema: Schema defining the expected output format
-        :param training_code: Training code to analyze for prediction patterns
-        :param model_loading_code: Generated code for loading model files
-        :param preprocessing_code: Generated code for preprocessing input data
+        :param [Type[BaseModel]] output_schema: Schema defining the expected output format
+        :param [str] training_code: Training code to analyze for prediction patterns
+        :param [str] model_loading_code: Generated code for loading model files
+        :param [str] preprocessing_code: Generated code for preprocessing input data
         :return: Code snippet for prediction
         """
         return extract_code(
             self.provider.query(
                 system_message=config.code_generation.prompt_inference_base.safe_substitute(),
                 user_message=config.code_generation.prompt_inference_prediction.safe_substitute(
-                    output_schema=output_schema,
+                    output_schema=output_schema.model_fields,
                     training_code=training_code,
                     model_loading_code=model_loading_code,
                     preprocessing_code=preprocessing_code,
@@ -168,8 +168,8 @@ class InferenceCodeGenerator:
     def review_inference_code(
         self,
         inference_code: str,
-        input_schema: dict,
-        output_schema: dict,
+        input_schema: Type[BaseModel],
+        output_schema: Type[BaseModel],
         training_code: str,
         problems: str = None,
         filedir: Path = None,
@@ -178,8 +178,8 @@ class InferenceCodeGenerator:
         Reviews the inference code to identify improvements and fix issues.
 
         :param [str] inference_code: The previously generated inference code.
-        :param [dict] input_schema: The schema of the input data.
-        :param [dict] output_schema: The schema of the output data.
+        :param [Type[BaseModel]] input_schema: The schema of the input data.
+        :param [Type[BaseModel]] output_schema: The schema of the output data.
         :param [str] training_code: The training code that has already been generated.
         :param [str] problems: Specific errors or bugs identified.
         :param [str] filedir: The directory in which the predictor should expect model files.
@@ -189,8 +189,8 @@ class InferenceCodeGenerator:
             system_message=config.code_generation.prompt_inference_base.safe_substitute(),
             user_message=config.code_generation.prompt_inference_review.safe_substitute(
                 inference_code=inference_code,
-                input_schema=input_schema,
-                output_schema=output_schema,
+                input_schema=input_schema.model_fields,
+                output_schema=output_schema.model_fields,
                 training_code=training_code,
                 problems=problems,
                 filedir=filedir.as_posix(),

@@ -41,8 +41,8 @@ import smolmodels as sm
 # Step 1: define the model
 model = sm.Model(
     intent="Predict sentiment on a news article such that [...]",
-    input_schema={"headline": str, "content": str},                     # [optional]
-    output_schema={"sentiment": str}                                    # [optional]
+    input_schema={"headline": str, "content": str},         # [optional - can be pydantic or dict]
+    output_schema={"sentiment": str}                        # [optional - can be pydantic or dict]
 )
 
 # Step 2: build and train the model on data
@@ -73,14 +73,15 @@ possible model solutions, evaluates them, and selects the one that maximises the
 
 ### 2.1. 💬 Define Models using Natural Language
 A model is defined as a transformation from an **input schema** to an **output schema**, which behaves according to an
-**intent**.
+**intent**. The schemas can be defined either using `pydantic` models, or plain dictionaries that are convertible to
+`pydantic` models.
 
 ```python
 # This defines the model's identity
 model = sm.Model(
     intent="Predict sentiment on a news article such that [...]",
-    input_schema={"headline": str, "content": str},
-    output_schema={"sentiment": str}
+    input_schema={"headline": str, "content": str},                 # supported: pydantic or dict
+    output_schema={"sentiment": str}                                # supported: pydantic or dict
 )
 ```
 
@@ -115,7 +116,7 @@ want to augment existing data. You can do this with the `sm.DatasetGenerator` cl
 
 ```python
 dataset = sm.DatasetGenerator(
-    schema={"headline": str, "content": str, "sentiment": str},
+    schema={"headline": str, "content": str, "sentiment": str},  # supported: pydantic or dict
     data=existing_data
 )
 dataset.generate(1000)
@@ -132,6 +133,7 @@ model.build(
 
 The library can also infer the input and/or output schema of your predictor, if required. This is based either on the
 dataset you provide, or on the model's intent. This can be useful when you don't know what the model should look like.
+As with the models, you can specify the schema using `pydantic` models or plain dictionaries.
 
 ```python
 # In this case, the library will infer a schema from the intent and generate data for you
