@@ -309,15 +309,19 @@ class ModelGenerator:
         # Create directory if it doesn't exist
         self.filedir.mkdir(parents=True, exist_ok=True)
 
-        # Copy model files to the model directory
+        # Copy model files to the model directory if not already there
         for artifact in node.model_artifacts:
             artifact_path = Path(artifact)
             if artifact_path.is_file():
-                shutil.copy2(artifact_path, self.filedir)
+                dest = self.filedir / artifact_path.name
+                if not dest.exists() or not artifact_path.samefile(dest):
+                    shutil.copy2(artifact_path, dest)
             elif artifact_path.is_dir():
                 for item in artifact_path.glob("*"):
                     if item.is_file():
-                        shutil.copy2(item, self.filedir / item.name)
+                        dest = self.filedir / item.name
+                        if not dest.exists() or not item.samefile(dest):
+                            shutil.copy2(item, dest)
 
         # Update node's model_artifacts to use the new path
         node.model_artifacts = [str(self.filedir)]
@@ -335,7 +339,6 @@ class ModelGenerator:
             input_sample=input_sample,
         )
 
-        # Generate inference code using LLM
         node.inference_code = self.infer_generator.generate_inference_code(
             input_schema=input_schema,
             output_schema=output_schema,
@@ -375,6 +378,7 @@ class ModelGenerator:
             raise RuntimeError(f"❌ Failed to generate valid inference code: {str(node.exception)}")
         return node
 
+    # TODO: get rid of this and use fileio
     def _cache_model_files(self, node: Node) -> None:
         """
         Copies the model artifacts to the model cache directory, and updates the paths in the code.
@@ -385,35 +389,36 @@ class ModelGenerator:
         # Make sure the model cache directory exists
         self.filedir.mkdir(parents=True, exist_ok=True)
 
-        # Create the model directory with model ID
-        model_dir = self.filedir / f"model-{hash(node.id)}-{node.id}"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy artifacts to cache and update the code to match
+        # Copy artifacts directly to the root directory
         for i in range(len(node.model_artifacts)):
             path: Path = Path(node.model_artifacts[i])
             name: str = Path(path).name
             try:
                 if path.is_dir():
-                    # If it's a directory, copy its contents
-                    if model_dir.exists():
-                        shutil.rmtree(model_dir)
-                    shutil.copytree(path, model_dir)
+                    # If it's a directory, copy its contents to root
+                    # Copy directory contents to root if not already there
+                    for item in path.glob("*"):
+                        if item.is_file():
+                            dest = self.filedir / item.name
+                            if not dest.exists() or not item.samefile(dest):
+                                shutil.copy2(item, dest)
                     # Update code paths
                     if node.training_code:
-                        node.training_code = node.training_code.replace(str(path), str(model_dir.as_posix()))
+                        node.training_code = node.training_code.replace(str(path), str(self.filedir.as_posix()))
                     if node.inference_code:
-                        node.inference_code = node.inference_code.replace(str(path), str(model_dir.as_posix()))
-                    node.model_artifacts[i] = model_dir
+                        node.inference_code = node.inference_code.replace(str(path), str(self.filedir.as_posix()))
+                    node.model_artifacts[i] = self.filedir
                 else:
-                    # If it's a file, copy directly
-                    shutil.copy(path, model_dir / name)
+                    # If it's a file, copy directly to root if not already there
+                    dest = self.filedir / name
+                    if not dest.exists() or not path.samefile(dest):
+                        shutil.copy2(path, dest)
                     # Update code paths
                     if node.training_code:
-                        node.training_code = node.training_code.replace(name, str((model_dir / name).as_posix()))
+                        node.training_code = node.training_code.replace(name, str((self.filedir / name).as_posix()))
                     if node.inference_code:
-                        node.inference_code = node.inference_code.replace(name, str((model_dir / name).as_posix()))
-                    node.model_artifacts[i] = model_dir / name
+                        node.inference_code = node.inference_code.replace(name, str((self.filedir / name).as_posix()))
+                    node.model_artifacts[i] = self.filedir / name
             except shutil.SameFileError:
                 pass
         # Delete the working directory before returning
