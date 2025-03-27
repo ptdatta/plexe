@@ -174,7 +174,7 @@ class Model:
 
             # Step 3: generate model
             self.model_generator = ModelGenerator(
-                self.intent, self.input_schema, self.output_schema, provider, self.files_path, self.constraints
+                self.intent, self.input_schema, self.output_schema, provider, self.constraints
             )
             generated = self.model_generator.generate(self.training_data, timeout, max_iterations, directives)
 
@@ -183,7 +183,7 @@ class Model:
             self.predictor_source = generated.inference_source_code
             self.predictor = generated.predictor
             self.artifacts = generated.model_artifacts
-            self.metrics = generated.performance
+            self.metrics = generated.test_performance  # TODO: expand this
             self.state = ModelState.READY
 
         except Exception as e:
