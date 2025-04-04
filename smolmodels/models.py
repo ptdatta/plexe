@@ -43,10 +43,20 @@ from smolmodels.config import config
 from smolmodels.constraints import Constraint
 from smolmodels.datasets import DatasetGenerator
 from smolmodels.directives import Directive
+from smolmodels.internal.common.datasets.interface import Dataset
 from smolmodels.internal.common.datasets.adapter import DatasetAdapter
 from smolmodels.internal.common.provider import Provider
-from smolmodels.internal.common.utils.pydantic_utils import map_to_basemodel
+from smolmodels.internal.common.utils.model_utils import calculate_model_size, format_code_snippet
+from smolmodels.internal.common.utils.pydantic_utils import map_to_basemodel, format_schema
 from smolmodels.internal.models.entities.artifact import Artifact
+from smolmodels.internal.models.entities.description import (
+    ModelDescription,
+    SchemaInfo,
+    ImplementationInfo,
+    PerformanceInfo,
+    CodeInfo,
+)
+from smolmodels.internal.models.entities.metric import Metric
 from smolmodels.internal.models.generators import ModelGenerator
 from smolmodels.internal.models.interfaces.predictor import Predictor
 from smolmodels.internal.schemas.resolver import SchemaResolver
@@ -112,7 +122,7 @@ class Model:
         self.input_schema: Type[BaseModel] = map_to_basemodel("in", input_schema) if input_schema else None
         self.output_schema: Type[BaseModel] = map_to_basemodel("out", output_schema) if output_schema else None
         self.constraints: List[Constraint] = constraints or []
-        self.training_data: Dict[str, pd.DataFrame] = dict()
+        self.training_data: Dict[str, Dataset] = dict()
 
         # The model's mutable state is defined by these fields
         self.state: ModelState = ModelState.DRAFT
@@ -120,7 +130,7 @@ class Model:
         self.trainer_source: str | None = None
         self.predictor_source: str | None = None
         self.artifacts: List[Artifact] = []
-        self.metrics: Dict[str, str] = dict()
+        self.metric: Metric | None = None
         self.metadata: Dict[str, str] = dict()  # todo: initialise metadata, etc
 
         # Generator objects used to create schemas, datasets, and the model itself
@@ -196,7 +206,16 @@ class Model:
             self.predictor_source = generated.inference_source_code
             self.predictor = generated.predictor
             self.artifacts = generated.model_artifacts
-            self.metrics = generated.test_performance  # TODO: expand this
+
+            # Convert Metric object to a dictionary with the entire metric object as the value
+            self.metric = generated.test_performance
+
+            # Store the model metadata from the generation process
+            self.metadata.update(generated.metadata)
+
+            # Store provider information in metadata
+            self.metadata["provider"] = str(provider.model)
+
             self.state = ModelState.READY
 
         except Exception as e:
@@ -243,29 +262,63 @@ class Model:
         Return metrics about the model.
         :return: metrics about the model
         """
-        return self.metrics
+        return None if self.metric is None else {self.metric.name: self.metric.value}
 
-    def describe(self) -> dict:
+    def describe(self) -> ModelDescription:
         """
-        Return a human-readable description of the model.
-        :return: a human-readable description of the model
-        """
-        # TODO: flesh this out with a dataclass etc
-        return {
-            "intent": self.intent,
-            "output_schema": self.output_schema,
-            "input_schema": self.input_schema,
-            "constraints": [str(constraint) for constraint in self.constraints],
-            "state": self.state,
-            "metadata": self.metadata,
-            "metrics": self.metrics,
-        }
+        Return a structured description of the model.
 
-    def review(self) -> dict:
+        :return: A ModelDescription object with various methods like to_dict(), as_text(),
+                as_markdown(), to_json() for different output formats
         """
-        Return a review of the model, which is a structured object consisting of a natural language
-        summary, suggested directives to apply, and more.
-        :return: a review of the model
-        """
-        # TODO: implement this
-        raise NotImplementedError("Review functionality is not yet implemented.")
+        # Create schema info
+        schemas = SchemaInfo(
+            input=format_schema(self.input_schema),
+            output=format_schema(self.output_schema),
+            constraints=[str(constraint) for constraint in self.constraints],
+        )
+
+        # Create implementation info
+        implementation = ImplementationInfo(
+            framework=self.metadata.get("framework", "Unknown"),
+            model_type=self.metadata.get("model_type", "Unknown"),
+            artifacts=[a.name for a in self.artifacts],
+            size=calculate_model_size(self.artifacts),
+        )
+
+        # Create performance info
+        # Convert Metric objects to string representation for JSON serialization
+        metrics_dict = {}
+        if hasattr(self.metric, "value") and hasattr(self.metric, "name"):  # Check if it's a Metric object
+            metrics_dict[self.metric.name] = str(self.metric.value)
+
+        performance = PerformanceInfo(
+            metrics=metrics_dict,
+            training_data_info={
+                name: {
+                    "modality": data.structure.modality,
+                    "features": data.structure.features,
+                    "structure": data.structure.details,
+                }
+                for name, data in self.training_data.items()
+            },
+        )
+
+        # Create code info
+        code = CodeInfo(
+            training=format_code_snippet(self.trainer_source), prediction=format_code_snippet(self.predictor_source)
+        )
+
+        # Assemble and return the complete model description
+        return ModelDescription(
+            id=self.identifier,
+            state=self.state.value,
+            intent=self.intent,
+            schemas=schemas,
+            implementation=implementation,
+            performance=performance,
+            code=code,
+            training_date=self.metadata.get("creation_date", "Unknown"),
+            rationale=self.metadata.get("selection_rationale", "Unknown"),
+            provider=self.metadata.get("provider", "Unknown"),
+        )
