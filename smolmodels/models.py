@@ -10,7 +10,7 @@ Key Features:
 - Input/Output Schema: Defines the structure and types of inputs and outputs.
 - Constraints: Rules that must hold true for input/output pairs.
 - Mutable State: Tracks the model's lifecycle, training metrics, and metadata.
-- Build Process: Integrates solution generation with directives and callbacks.
+- Build Process: Integrates solution generation with callbacks.
 
 Example:
 >>>    model = Model(
@@ -29,20 +29,25 @@ Example:
 >>>    print(prediction)
 """
 
+import os
+import json
 import logging
 import uuid
 from typing import Dict, List, Type, Any
+from datetime import datetime
 
 import pandas as pd
 from pydantic import BaseModel
 
+from smolmodels.config import prompt_templates
 from smolmodels.constraints import Constraint
 from smolmodels.datasets import DatasetGenerator
-from smolmodels.directives import Directive
 from smolmodels.callbacks import Callback, BuildStateInfo
-from smolmodels.internal.common.datasets.interface import Dataset
+from smolmodels.internal.agents import SmolmodelsAgent
+from smolmodels.internal.common.datasets.interface import Dataset, TabularConvertible
 from smolmodels.internal.common.datasets.adapter import DatasetAdapter
-from smolmodels.internal.common.provider import Provider
+from smolmodels.internal.common.provider import Provider, ProviderConfig
+from smolmodels.internal.common.registries.objects import ObjectRegistry
 from smolmodels.internal.common.utils.model_utils import calculate_model_size, format_code_snippet
 from smolmodels.internal.common.utils.pydantic_utils import map_to_basemodel, format_schema
 from smolmodels.internal.common.utils.model_state import ModelState
@@ -55,7 +60,6 @@ from smolmodels.internal.models.entities.description import (
     CodeInfo,
 )
 from smolmodels.internal.models.entities.metric import Metric
-from smolmodels.internal.models.generators import ModelGenerator
 from smolmodels.internal.models.interfaces.predictor import Predictor
 from smolmodels.internal.schemas.resolver import SchemaResolver
 
@@ -126,34 +130,43 @@ class Model:
 
         # Generator objects used to create schemas, datasets, and the model itself
         self.schema_resolver: SchemaResolver | None = None
-        self.model_generator: ModelGenerator | None = None
 
+        # Registries used to make datasets, artifacts and other objects available across the system
+        self.object_registry = ObjectRegistry()
+
+        # Setup the working directory and unique identifiers
         self.identifier: str = f"model-{abs(hash(self.intent))}-{str(uuid.uuid4())}"
+        self.run_id = f"run-{datetime.now().isoformat()}".replace(":", "-").replace(".", "-")
+        self.working_dir = f"./workdir/{self.run_id}/"
+        os.makedirs(self.working_dir, exist_ok=True)
 
     def build(
         self,
         datasets: List[pd.DataFrame | DatasetGenerator],
-        provider: str = "openai/gpt-4o-mini",
-        directives: List[Directive] = None,
+        provider: str | ProviderConfig = "openai/gpt-4o-mini",
         timeout: int = None,
         max_iterations: int = None,
         run_timeout: int = 1800,
         callbacks: List[Callback] = None,
+        verbose: bool = False,
     ) -> None:
         """
-        Build the model using the provided dataset, directives, and optional data generation configuration.
+        Build the model using the provided dataset and optional data generation configuration.
 
         :param datasets: the datasets to use for training the model
-        :param provider: the provider to use for model building
-        :param directives: instructions related to the model building process - not the model itself
+        :param provider: the provider to use for model building, either a string or a ProviderConfig
+                         for granular control of which models to use for different agent roles
         :param timeout: maximum total time in seconds to spend building the model (all iterations combined)
         :param max_iterations: maximum number of iterations to spend building the model
         :param run_timeout: maximum time in seconds for each individual model training run
         :param callbacks: list of callbacks to notify during the model building process
+        :param verbose: whether to display detailed agent logs during model building (default: False)
         :return:
         """
-        # Initialize callbacks list if not provided
-        callbacks = callbacks or []
+        # Ensure the object registry is cleared before building
+        self.object_registry.clear()
+        # Register all callbacks in the object registry
+        self.object_registry.register_multiple(Callback, {f"{i}": c for i, c in enumerate(callbacks or [])})
 
         # Ensure timeout, max_iterations, and run_timeout make sense
         if timeout is None and max_iterations is None:
@@ -164,25 +177,22 @@ class Model:
         # TODO: validate that schema features are present in the dataset
         # TODO: validate that datasets do not contain duplicate features
         try:
-            provider_obj = Provider(model=provider)
+            # Convert string provider to config if needed
+            if isinstance(provider, str):
+                provider_config = ProviderConfig(default_provider=provider)
+            else:
+                provider_config = provider
+
+            # We use the tool_provider for schema resolution and tool operations
+            provider_obj = Provider(model=provider_config.tool_provider)
             self.state = ModelState.BUILDING
 
-            for callback in callbacks:
-                try:
-                    callback.on_build_start(
-                        BuildStateInfo(
-                            intent=self.intent,
-                            provider=provider_obj.model,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_start: {e}")
-
-            # Step 1: coerce datasets to supported formats
+            # Step 1: coerce datasets to supported formats and register them
             self.training_data = {
                 f"dataset_{i}": DatasetAdapter.coerce((data.data if isinstance(data, DatasetGenerator) else data))
                 for i, data in enumerate(datasets)
             }
+            self.object_registry.register_multiple(TabularConvertible, self.training_data)
 
             # Step 2: resolve schemas
             self.schema_resolver = SchemaResolver(provider_obj, self.intent)
@@ -194,17 +204,81 @@ class Model:
             elif self.input_schema is None:
                 self.input_schema, _ = self.schema_resolver.resolve(self.training_data)
 
+            # Run callbacks for build start
+            for callback in self.object_registry.get_all(Callback).values():
+                try:
+                    # Note: callbacks still receive the actual dataset objects for backward compatibility
+                    callback.on_build_start(
+                        BuildStateInfo(
+                            intent=self.intent,
+                            input_schema=self.input_schema,
+                            output_schema=self.output_schema,
+                            provider=provider_config.tool_provider,  # Use tool_provider for callbacks
+                            run_timeout=run_timeout,
+                            max_iterations=max_iterations,
+                            timeout=timeout,
+                            datasets={
+                                name: self.object_registry.get(TabularConvertible, name)
+                                for name in self.training_data.keys()
+                            },
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_start: {e}")
+
             # Step 3: generate model
-            self.model_generator = ModelGenerator(
-                self.intent, self.input_schema, self.output_schema, provider_obj, self.constraints
-            )
-            generated = self.model_generator.generate(
-                datasets=self.training_data,
-                run_timeout=run_timeout,
-                timeout=timeout,
+            # Start the model generation run
+            agent_prompt = prompt_templates.agent_builder_prompt(
+                intent=self.intent,
+                input_schema=json.dumps(format_schema(self.input_schema), indent=4),
+                output_schema=json.dumps(format_schema(self.output_schema), indent=4),
+                datasets=list(self.training_data.keys()),
+                working_dir=self.working_dir,
                 max_iterations=max_iterations,
-                callbacks=callbacks,
             )
+            agent = SmolmodelsAgent(
+                orchestrator_model_id=provider_config.orchestrator_provider,
+                ml_researcher_model_id=provider_config.research_provider,
+                ml_engineer_model_id=provider_config.engineer_provider,
+                ml_ops_engineer_model_id=provider_config.ops_provider,
+                verbose=verbose,
+                max_steps=30,
+            )
+            generated = agent.run(
+                agent_prompt,
+                additional_args={
+                    "intent": self.intent,
+                    "working_dir": self.working_dir,
+                    "input_schema": format_schema(self.input_schema),
+                    "output_schema": format_schema(self.output_schema),
+                    "provider": provider_config.tool_provider,  # Use tool_provider for tool operations
+                    "max_iterations": max_iterations,
+                    "timeout": timeout,
+                    "run_timeout": run_timeout,
+                },
+            )
+
+            # Run callbacks for build end
+            for callback in self.object_registry.get_all(Callback).values():
+                try:
+                    # Note: callbacks still receive the actual dataset objects for backward compatibility
+                    callback.on_build_end(
+                        BuildStateInfo(
+                            intent=self.intent,
+                            input_schema=self.input_schema,
+                            output_schema=self.output_schema,
+                            provider=provider,
+                            run_timeout=run_timeout,
+                            max_iterations=max_iterations,
+                            timeout=timeout,
+                            datasets={
+                                name: self.object_registry.get(TabularConvertible, name)
+                                for name in self.training_data.keys()
+                            },
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_end: {e}")
 
             # Step 4: update model state and attributes
             self.trainer_source = generated.training_source_code
@@ -219,17 +293,22 @@ class Model:
             self.metadata.update(generated.metadata)
 
             # Store provider information in metadata
-            self.metadata["provider"] = str(provider_obj.model)
+            self.metadata["provider"] = str(provider_config.default_provider)
+            self.metadata["orchestrator_provider"] = str(provider_config.orchestrator_provider)
+            self.metadata["research_provider"] = str(provider_config.research_provider)
+            self.metadata["engineer_provider"] = str(provider_config.engineer_provider)
+            self.metadata["ops_provider"] = str(provider_config.ops_provider)
+            self.metadata["tool_provider"] = str(provider_config.tool_provider)
 
             self.state = ModelState.READY
 
-            # TODO: invoke callbacks for 'on_build_end' event
-            for callback in callbacks:
+            # Run callbacks for 'on_build_end' event
+            for callback in self.object_registry.get_all(Callback).values():
                 try:
                     callback.on_build_end(
                         BuildStateInfo(
                             intent=self.intent,
-                            provider=provider_obj.model,
+                            provider=provider_config.tool_provider,  # Use tool_provider for callbacks
                         )
                     )
                 except Exception as e:

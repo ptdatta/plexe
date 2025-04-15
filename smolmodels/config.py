@@ -7,7 +7,6 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from importlib.resources import files
-from string import Template
 from typing import List
 from functools import cached_property
 from jinja2 import Environment, FileSystemLoader
@@ -66,6 +65,7 @@ class _Config:
                 "pandas",
                 "numpy",
                 "scikit-learn",
+                "sklearn",
                 "joblib",
                 "mlxtend",
                 "xgboost",
@@ -85,6 +85,32 @@ class _Config:
             ]
         )
 
+        # Additional standard library modules for agent execution
+        _standard_lib_modules: List[str] = field(
+            default_factory=lambda: [
+                "pathlib",
+                "typing",
+                "dataclasses",
+                "json",
+                "time",
+                "datetime",
+                "os",
+                "sys",
+                "math",
+                "random",
+                "itertools",
+                "collections",
+                "functools",
+                "operator",
+                "re",
+                "copy",
+                "warnings",
+                "logging",
+                "importlib",
+                "types",
+            ]
+        )
+
         @property
         def allowed_packages(self) -> List[str]:
             """Dynamically determine which packages are available and can be used."""
@@ -98,71 +124,28 @@ class _Config:
             return available_packages
 
         @property
+        def authorized_agent_imports(self) -> List[str]:
+            """Return the combined list of allowed packages and standard library modules for agent execution."""
+            # Start with allowed packages
+            imports = self.allowed_packages.copy()
+
+            # Add additional ML packages that might not be in allowed_packages
+            additional_ml_packages = ["lightgbm", "catboost", "tensorflow"]
+            for package in additional_ml_packages:
+                if package not in imports:
+                    imports.append(package)
+
+            # Add standard library modules
+            imports.extend(self._standard_lib_modules)
+
+            return imports
+
+        @property
         def deep_learning_available(self) -> bool:
             """Check if deep learning packages are available."""
             return any(is_package_available(pkg) for pkg in self._deep_learning_packages)
 
         k_fold_validation: int = field(default=5)
-        # prompts used in generating plans or making decisions
-        prompt_planning_select_stop_condition: Template = field(
-            default=Template(
-                "Define the stopping condition for when we should stop searching for new solutions, "
-                "given the following task description, and the metric we are trying to optimize. In deciding, "
-                "consider the complexity of the problem, how many solutions it might be reasonable to try, and "
-                "what the metric value should be to consider a solution good enough.\n\n"
-                "The metric to optimise is ${metric}.\n\n"
-                "The task is:\n${problem_statement}\n\n"
-            )
-        )
-
-        @property
-        def prompt_planning_generate_plan(self) -> Template:
-            """
-            Dynamically generate the plan generation template.
-            Conditionally includes fine-tuning suggestion if deep learning packages are available.
-            """
-            base_prompt = (
-                "Write a solution plan for the machine learning problem outlined below. The solution must produce "
-                "a model that achieves the best possible performance on ${metric_to_optimise}.\n\n"
-            )
-
-            # Include fine-tuning suggestion only if deep learning packages are available
-            if self.deep_learning_available:
-                base_prompt += "If appropriate, consider using pre-trained models under 20MB that can be fine-tuned with the provided data.\n\n"
-
-            base_prompt += (
-                "# TASK:\n${problem_statement}\n\n"
-                "# PREVIOUS ATTEMPTS, IF ANY:\n${context}\n\n"
-                "The solution concept should be explained in 3-5 sentences. Do not include an implementation of the "
-                "solution, though you can include small code snippets if relevant to explain the plan. "
-                "Do not suggest doing EDA, ensembling, or hyperparameter tuning. "
-                "The solution should be feasible using only ${allowed_packages}, and no other non-standard libraries. "
-            )
-
-            return Template(base_prompt)
-
-        prompt_schema_base: Template = field(
-            default=Template("You are an expert ML engineer identifying target variables.")
-        )
-
-        prompt_schema_identify_target: Template = field(
-            default=Template(
-                "Given these columns from a dataset:\n"
-                "${columns}\n\n"
-                "For this ML task: ${intent}\n\n"
-                "Which column is the target/output variable? Return ONLY the exact column name, nothing else."
-            )
-        )
-        prompt_schema_generate_from_intent: Template = field(
-            default=Template(
-                "Generate appropriate input and output schemas for this machine learning task.\n\n"
-                "Task description: ${intent}\n\n"
-                "The ${input_schema} should contain features needed for prediction.\n"
-                "The ${output_schema} should contain what needs to be predicted.\n"
-                "Return your response as a valid JSON object.\n"
-                'Use only these types: "int", "float", "str", "bool".'
-            )
-        )
 
     @dataclass(frozen=True)
     class _DataGenerationConfig:
@@ -214,6 +197,17 @@ class _PromptTemplates:
             deep_learning_available=config.code_generation.deep_learning_available,
         )
 
+    def schema_base(self) -> str:
+        return self._render("schemas/base.jinja")
+
+    def schema_identify_target(self, columns, intent) -> str:
+        return self._render("schemas/identify_target.jinja", columns=columns, intent=intent)
+
+    def schema_generate_from_intent(self, intent, input_schema="input_schema", output_schema="output_schema") -> str:
+        return self._render(
+            "schemas/generate_from_intent.jinja", intent=intent, input_schema=input_schema, output_schema=output_schema
+        )
+
     def training_system(self) -> str:
         return self._render("training/system_prompt.jinja")
 
@@ -246,14 +240,13 @@ class _PromptTemplates:
             use_validation_files=len(validation_data_files) > 0,
         )
 
-    def training_review(self, problem_statement, plan, training_code, problems, history, allowed_packages) -> str:
+    def training_review(self, problem_statement, plan, training_code, problems, allowed_packages) -> str:
         return self._render(
             "training/review.jinja",
             problem_statement=problem_statement,
             plan=plan,
             training_code=training_code,
             problems=problems,
-            history=history,
             allowed_packages=allowed_packages,
         )
 
@@ -340,6 +333,25 @@ class _PromptTemplates:
             solution_plan=solution_plan,
             training_code=training_code,
             inference_code=inference_code,
+        )
+
+    def agent_builder_prompt(
+        self,
+        intent: str,
+        input_schema: str,
+        output_schema: str,
+        datasets: List[str],
+        working_dir: str,
+        max_iterations: int = None,
+    ) -> str:
+        return self._render(
+            "agent/agent_manager_prompt.jinja",
+            intent=intent,
+            input_schema=input_schema,
+            output_schema=output_schema,
+            datasets=datasets,
+            working_dir=working_dir,
+            max_iterations=max_iterations,
         )
 
 

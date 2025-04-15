@@ -10,7 +10,6 @@ import mlflow
 import logging
 import warnings
 from pathlib import Path
-from typing import Optional
 
 from smolmodels.callbacks import Callback, BuildStateInfo
 from smolmodels.internal.models.entities.metric import Metric
@@ -92,7 +91,10 @@ class MLFlowCallback(Callback):
 
         :param info: Information about the iteration start.
         """
-        run_name = f"iteration-{info.iteration}"
+        import datetime
+
+        timestamp = datetime.datetime.now().isoformat().replace(":", "-").replace(".", "-")
+        run_name = f"run-{timestamp}"
         mlflow.start_run(
             run_name=run_name,
             experiment_id=self.experiment_id,
@@ -107,8 +109,8 @@ class MLFlowCallback(Callback):
         mlflow.log_params(
             {
                 "intent": info.intent,
-                "input_schema": str(info.input_schema.model_fields),
-                "output_schema": str(info.output_schema.model_fields),
+                # "input_schema": str(info.input_schema.model_fields),
+                # "output_schema": str(info.output_schema.model_fields),
                 "provider": str(info.provider),
                 "run_timeout": info.run_timeout,
                 "iteration": info.iteration,
@@ -145,11 +147,11 @@ class MLFlowCallback(Callback):
 
         # Log node performance if available
         if info.node.performance:
-            self._log_metric(info.node.performance, step=info.iteration)
+            self._log_metric(info.node.performance)
 
         # Log execution time
         if info.node.execution_time:
-            mlflow.log_metric("execution_time", info.node.execution_time, step=info.iteration)
+            mlflow.log_metric("execution_time", info.node.execution_time)
 
         # Log whether exception was raised
         if info.node.exception_was_raised:
@@ -165,18 +167,21 @@ class MLFlowCallback(Callback):
                         logger.warning(f"Could not log artifact {artifact}: {e}")
 
         try:
-            mlflow.end_run(status="FAILED" if info.node.exception_was_raised else "FINISHED")
+            is_failed = (
+                info.node.exception_was_raised or info.node.performance is None or info.node.performance.is_worst
+            )
+            mlflow.end_run(status="FAILED" if is_failed else "FINISHED")
         except Exception as e:
             logger.warning(f"Error ending MLFlow run: {e}")
 
     @staticmethod
-    def _log_metric(metric: Metric, prefix: str = "", step: Optional[int] = None) -> None:
+    def _log_metric(metric: Metric, prefix: str = "", step: int = None) -> None:
         """
         Log a SmolModels Metric object to MLFlow.
 
         :param metric: SmolModels Metric object
         :param prefix: Optional prefix for the metric name
-        :param step: Optional step number
+        :param step: Optional step (iteration) for the metric
         """
         if mlflow is None or not mlflow.active_run():
             return
@@ -184,7 +189,12 @@ class MLFlowCallback(Callback):
         if metric and hasattr(metric, "name") and hasattr(metric, "value"):
             try:
                 value = float(metric.value)
-                mlflow.log_metric(re.sub(r"[^a-zA-Z0-9]", "", f"{prefix}{metric.name}"), value, step=step)
+                metric_name = re.sub(r"[^a-zA-Z0-9]", "", f"{prefix}{metric.name}")
+
+                if step is not None:
+                    mlflow.log_metric(metric_name, value, step=step)
+                else:
+                    mlflow.log_metric(metric_name, value)
             except (ValueError, TypeError) as e:
                 logger.warning(f"Could not convert metric {metric.name} value to float: {e}")
                 # Try to log as tag instead
