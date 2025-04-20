@@ -102,14 +102,38 @@ Build complete models with a single method call:
 
 ```python
 model.build(
-    datasets=[dataset],
+    datasets=[dataset_a, dataset_b],
     provider="openai/gpt-4o-mini",  # LLM provider
     max_iterations=10,              # Max solutions to explore
     timeout=1800                    # Optional time limit in seconds
 )
 ```
 
-### 2.4. 🎲 Data Generation & Schema Inference
+### 2.4. 🚀 Distributed Training with Ray
+
+Plexe supports distributed model training and evaluation with Ray for faster parallel processing:
+
+```python
+from plexe import Model
+from plexe.config import config
+
+# Optional: Configure Ray cluster address if using remote Ray
+# config.ray.address = "ray://10.1.2.3:10001"
+
+model = Model(
+    intent="Predict house prices based on various features",
+    distributed=True  # Enable distributed execution
+)
+
+model.build(
+    datasets=[df],
+    provider="openai/gpt-4o-mini"
+)
+```
+
+Ray distributes your workload across available CPU cores, significantly speeding up model generation and evaluation when exploring multiple model variants.
+
+### 2.5. 🎲 Data Generation & Schema Inference
 Generate synthetic data or infer schemas automatically:
 
 ```python
@@ -124,7 +148,7 @@ model = plexe.Model(intent="Predict customer churn based on usage patterns")
 model.build(provider="openai/gpt-4o-mini")  # Schema inferred automatically
 ```
 
-### 2.5. 🌐 Multi-Provider Support
+### 2.6. 🌐 Multi-Provider Support
 Use your preferred LLM provider:
 ```python
 model.build(provider="openai/gpt-4o-mini")    # OpenAI
@@ -177,3 +201,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Join our [Discord](https:
 
 ## 8. License
 [Apache-2.0 License](LICENSE)
+
+## 9. Product Roadmap
+
+- [X] Fine-tuning and transfer learning for small pre-trained models
+- [X] Use Pydantic for schemas and split data generation into a separate module
+- [X] Plexe self-hosted platform ⭐ (More details coming soon!)
+- [X] Lightweight installation option without heavy deep learning dependencies
+- [X] Distributed training with Ray on AWS
+- [ ] Support for non-tabular data types in model generation
+- [ ] File upload to docker containers
