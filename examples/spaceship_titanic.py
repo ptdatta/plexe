@@ -24,7 +24,8 @@ from plexe.internal.common.provider import ProviderConfig
 model = plexe.Model(
     intent=(
         "From features describing a Spaceship Titanic passenger's information, determine whether they were "
-        "transported or not."
+        "transported or not. Use only linear regression and decision tree models, no ensembling. The models "
+        "must be extremely simple and quickly trainable on extremely constrained hardware."
     ),
     input_schema={
         "PassengerId": str,
@@ -64,7 +65,7 @@ model.build(
         ops_provider="anthropic/claude-3-7-sonnet-20250219",
         tool_provider="openai/gpt-4o",
     ),
-    max_iterations=4,
+    max_iterations=1,
     timeout=300,  # 5 minute timeout
     run_timeout=150,
     verbose=False,
@@ -76,11 +77,11 @@ model.build(
 plexe.save_model(model, "spaceship_titanic_model.tar.gz")
 
 # Step 4: Run a prediction on the built model
-test_df = pd.read_csv("examples/datasets/spaceship-titanic-test.csv")
+test_df = pd.read_csv("examples/datasets/spaceship-titanic-test.csv").sample(10)
 predictions = pd.DataFrame.from_records([model.predict(x) for x in test_df.to_dict(orient="records")])
 
 # Step 5: print a sample of predictions
-print(predictions.sample(10))
+print(predictions)
 
 # Step 6: Print model description
 description = model.describe()

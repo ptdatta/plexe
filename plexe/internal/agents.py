@@ -17,22 +17,21 @@ from plexe.internal.models.entities.code import Code
 from plexe.internal.models.entities.metric import Metric
 from plexe.internal.models.entities.metric import MetricComparator, ComparisonMethod
 from plexe.internal.models.interfaces.predictor import Predictor
-from plexe.internal.models.tools.code_generation import (
-    generate_inference_code,
-    fix_inference_code,
-    generate_training_code,
-    fix_training_code,
+from plexe.internal.models.tools.training import (
+    get_generate_training_code,
+    get_fix_training_code,
 )
+from plexe.internal.models.tools.evaluation import get_review_finalised_model
+from plexe.internal.models.tools.metrics import get_select_target_metric
 from plexe.internal.models.tools.datasets import split_datasets, create_input_sample
-from plexe.internal.models.tools.evaluation import review_finalised_model
 from plexe.internal.models.tools.execution import get_executor_tool
-from plexe.internal.models.tools.metrics import select_target_metric
 from plexe.internal.models.tools.response_formatting import (
     format_final_orchestrator_agent_response,
     format_final_mle_agent_response,
     format_final_mlops_agent_response,
 )
-from plexe.internal.models.tools.validation import validate_inference_code, validate_training_code
+from plexe.internal.models.tools.context import get_inference_context_tool
+from plexe.internal.models.tools.validation import validate_training_code, validate_inference_code
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +61,7 @@ class PlexeAgent:
         ml_researcher_model_id: str = "openai/gpt-4o",
         ml_engineer_model_id: str = "anthropic/claude-3-7-sonnet-20250219",
         ml_ops_engineer_model_id: str = "anthropic/claude-3-7-sonnet-20250219",
+        tool_model_id: str = "openai/gpt-4o",
         verbose: bool = False,
         max_steps: int = 30,
         distributed: bool = False,
@@ -75,6 +75,7 @@ class PlexeAgent:
             ml_researcher_model_id: Model ID for the ML researcher agent
             ml_engineer_model_id: Model ID for the ML engineer agent
             ml_ops_engineer_model_id: Model ID for the ML ops engineer agent
+            tool_model_id: Model ID for the model used inside tool calls
             verbose: Whether to display detailed agent logs
             max_steps: Maximum number of steps for the orchestrator agent
             distributed: Whether to run the agents in a distributed environment
@@ -84,6 +85,7 @@ class PlexeAgent:
         self.ml_researcher_model_id = ml_researcher_model_id
         self.ml_engineer_model_id = ml_engineer_model_id
         self.ml_ops_engineer_model_id = ml_ops_engineer_model_id
+        self.tool_model_id = tool_model_id
         self.verbose = verbose
         self.max_steps = max_steps
         self.distributed = distributed
@@ -103,7 +105,6 @@ class PlexeAgent:
                 "- input schema for the model"
                 "- output schema for the model"
                 "- the name and comparison method of the metric to optimise"
-                "- the identifier of the LLM that should be used for plan generation"
             ),
             model=LiteLLMModel(model_id=self.ml_researcher_model_id),
             tools=[],
@@ -126,13 +127,12 @@ class PlexeAgent:
                 "- the full solution plan that outlines how to solve this problem"
                 "- the split train/validation dataset names"
                 "- the working directory to use for model execution"
-                "- the identifier of the LLM that should be used for code generation"
             ),
             model=LiteLLMModel(model_id=self.ml_engineer_model_id),
             tools=[
-                generate_training_code,
+                get_generate_training_code(self.tool_model_id),
                 validate_training_code,
-                fix_training_code,
+                get_fix_training_code(self.tool_model_id),
                 get_executor_tool(distributed),
                 format_final_mle_agent_response,
             ],
@@ -143,27 +143,25 @@ class PlexeAgent:
         )
 
         # Create predictor builder agent - creates inference code
-        self.mlops_engineer = ToolCallingAgent(
+        self.mlops_engineer = CodeAgent(
             name="MLOperationsEngineer",
             description=(
-                "Expert ML operations engineer that writes inference code for ML models to be used in production. "
-                "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
+                "Expert ML operations engineer that analyzes training code and creates high-quality production-ready "
+                "inference code for ML models. To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
                 "- input schema for the model"
                 "- output schema for the model"
                 "- the 'training code id' of the training code produced by the MLEngineer agent"
-                "- the identifier of the LLM that should be used for code generation"
             ),
             model=LiteLLMModel(model_id=self.ml_ops_engineer_model_id),
             tools=[
-                split_datasets,
-                generate_inference_code,
+                get_inference_context_tool(self.tool_model_id),
                 validate_inference_code,
-                fix_inference_code,
                 format_final_mlops_agent_response,
             ],
             add_base_tools=False,
             verbosity_level=self.specialist_verbosity,
-            prompt_templates=get_prompt_templates("toolcalling_agent.yaml", "mlops_prompt_templates.yaml"),
+            additional_authorized_imports=config.code_generation.authorized_agent_imports,
+            prompt_templates=get_prompt_templates("code_agent.yaml", "mlops_prompt_templates.yaml"),
             planning_interval=8,
             step_callbacks=[self.chain_of_thought_callable],
         )
@@ -173,8 +171,8 @@ class PlexeAgent:
             name="Orchestrator",
             model=LiteLLMModel(model_id=self.orchestrator_model_id),
             tools=[
-                select_target_metric,
-                review_finalised_model,
+                get_select_target_metric(self.tool_model_id),
+                get_review_finalised_model(self.tool_model_id),
                 split_datasets,
                 create_input_sample,
                 format_final_orchestrator_agent_response,

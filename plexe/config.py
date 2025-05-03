@@ -93,6 +93,7 @@ class _Config:
                 "typing",
                 "dataclasses",
                 "json",
+                "io",
                 "time",
                 "datetime",
                 "os",
@@ -109,6 +110,7 @@ class _Config:
                 "logging",
                 "importlib",
                 "types",
+                "plexe",
             ]
         )
 
@@ -250,79 +252,6 @@ class _PromptTemplates:
             training_code=training_code,
             problems=problems,
             allowed_packages=allowed_packages,
-        )
-
-    def inference_system(self) -> str:
-        return self._render("inference/system_prompt.jinja")
-
-    def inference_load(self, predictor_template, training_code) -> str:
-        return self._render(
-            "inference/load.jinja",
-            predictor_template=predictor_template,
-            training_code=training_code,
-        )
-
-    def inference_preprocess(self, inference_code, input_schema, training_code) -> str:
-        return self._render(
-            "inference/preprocess.jinja",
-            inference_code=inference_code,
-            input_schema=input_schema,
-            training_code=training_code,
-        )
-
-    def inference_postprocess(self, inference_code, output_schema, training_code) -> str:
-        return self._render(
-            "inference/postprocess.jinja",
-            inference_code=inference_code,
-            output_schema=output_schema,
-            training_code=training_code,
-        )
-
-    def inference_predict(self, output_schema, input_schema, training_code, inference_code) -> str:
-        return self._render(
-            "inference/predict.jinja",
-            output_schema=output_schema,
-            input_schema=input_schema,
-            training_code=training_code,
-            inference_code=inference_code,
-        )
-
-    def inference_combine(self, inference_code, predictor_interface_source) -> str:
-        return self._render(
-            "inference/combine.jinja",
-            inference_code=inference_code,
-            predictor_interface_source=predictor_interface_source,
-        )
-
-    def inference_fix(self, predictor_interface_source, predictor_template, inference_code, review, problems) -> str:
-        return self._render(
-            "inference/fix.jinja",
-            predictor_interface_source=predictor_interface_source,
-            predictor_template=predictor_template,
-            inference_code=inference_code,
-            review=review,
-            problems=problems,
-        )
-
-    def inference_review(
-        self,
-        predictor_interface_source,
-        predictor_template,
-        inference_code,
-        input_schema,
-        output_schema,
-        training_code,
-        problems,
-    ) -> str:
-        return self._render(
-            "inference/review.jinja",
-            predictor_interface_source=predictor_interface_source,
-            predictor_template=predictor_template,
-            inference_code=inference_code,
-            input_schema=input_schema,
-            output_schema=output_schema,
-            training_code=training_code,
-            problems=problems,
         )
 
     def review_system(self) -> str:
