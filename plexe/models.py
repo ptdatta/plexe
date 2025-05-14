@@ -50,10 +50,11 @@ from plexe.constraints import Constraint
 from plexe.datasets import DatasetGenerator
 from plexe.callbacks import Callback, BuildStateInfo, ChainOfThoughtModelCallback
 from plexe.internal.common.utils.chain_of_thought.emitters import ConsoleEmitter
+from plexe.agents.schema_resolver import SchemaResolverAgent
 from plexe.internal.agents import PlexeAgent
 from plexe.internal.common.datasets.interface import Dataset, TabularConvertible
 from plexe.internal.common.datasets.adapter import DatasetAdapter
-from plexe.internal.common.provider import Provider, ProviderConfig
+from plexe.internal.common.provider import ProviderConfig
 from plexe.internal.common.registries.objects import ObjectRegistry
 from plexe.internal.common.utils.model_utils import calculate_model_size, format_code_snippet
 from plexe.internal.common.utils.pydantic_utils import map_to_basemodel, format_schema
@@ -68,7 +69,6 @@ from plexe.internal.models.entities.description import (
 )
 from plexe.internal.models.entities.metric import Metric
 from plexe.internal.models.interfaces.predictor import Predictor
-from plexe.internal.schemas.resolver import SchemaResolver
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +136,6 @@ class Model:
         self.artifacts: List[Artifact] = []
         self.metric: Metric | None = None
         self.metadata: Dict[str, str] = dict()  # todo: initialise metadata, etc
-
-        # Generator objects used to create schemas, datasets, and the model itself
-        self.schema_resolver: SchemaResolver | None = None
 
         # Registries used to make datasets, artifacts and other objects available across the system
         self.object_registry = ObjectRegistry()
@@ -208,7 +205,6 @@ class Model:
                 provider_config = provider
 
             # We use the tool_provider for schema resolution and tool operations
-            provider_obj = Provider(model=provider_config.tool_provider)
             self.state = ModelState.BUILDING
 
             # Step 1: coerce datasets to supported formats and register them
@@ -218,18 +214,30 @@ class Model:
             }
             self.object_registry.register_multiple(TabularConvertible, self.training_data)
 
-            # Step 2: resolve schemas
-            self.schema_resolver = SchemaResolver(provider_obj, self.intent)
+            # Step 2: define model schemas using the SchemaResolverAgent (only if schemas are not provided)
+            if self.input_schema is not None:
+                self.object_registry.register(dict, "input_schema", format_schema(self.input_schema))
+            if self.output_schema is not None:
+                self.object_registry.register(dict, "output_schema", format_schema(self.output_schema))
 
-            if self.input_schema is None and self.output_schema is None:
-                self.input_schema, self.output_schema = self.schema_resolver.resolve(self.training_data)
-            elif self.output_schema is None:
-                _, self.output_schema = self.schema_resolver.resolve(self.training_data)
-            elif self.input_schema is None:
-                self.input_schema, _ = self.schema_resolver.resolve(self.training_data)
+            # Create and run the schema resolver agent
+            schema_resolver_agent = SchemaResolverAgent(
+                model_id=provider_config.tool_provider,
+                verbose=verbose,
+                chain_of_thought_callable=cot_callable,
+            )
+            schema_result = schema_resolver_agent.run(
+                intent=self.intent,
+                dataset_names=list(self.training_data.keys()),
+                user_input_schema=format_schema(self.input_schema) if self.input_schema else None,
+                user_output_schema=format_schema(self.output_schema) if self.output_schema else None,
+            )
 
-            self.object_registry.register(dict, "input_schema", format_schema(self.input_schema))
-            self.object_registry.register(dict, "output_schema", format_schema(self.output_schema))
+            # Convert the returned schemas to Pydantic models and update
+            if self.input_schema is None:
+                self.input_schema = map_to_basemodel("InputSchema", schema_result["input_schema"])
+            if self.output_schema is None:
+                self.output_schema = map_to_basemodel("OutputSchema", schema_result["output_schema"])
 
             # Run callbacks for build start
             for callback in self.object_registry.get_all(Callback).values():
@@ -263,6 +271,9 @@ class Model:
 
             # Step 3: generate model
             # Start the model generation run
+            # Get schema reasoning if available
+            schema_reasoning = self.object_registry.get(str, "schema_reasoning")
+
             agent_prompt = prompt_templates.agent_builder_prompt(
                 intent=self.intent,
                 input_schema=json.dumps(format_schema(self.input_schema), indent=4),
@@ -270,6 +281,7 @@ class Model:
                 datasets=list(self.training_data.keys()),
                 working_dir=self.working_dir,
                 max_iterations=max_iterations,
+                schema_reasoning=schema_reasoning,
             )
             agent = PlexeAgent(
                 orchestrator_model_id=provider_config.orchestrator_provider,
@@ -346,26 +358,6 @@ class Model:
             self.metadata["tool_provider"] = str(provider_config.tool_provider)
 
             self.state = ModelState.READY
-
-            # Run callbacks for 'on_build_end' event
-            for callback in self.object_registry.get_all(Callback).values():
-                try:
-                    callback.on_build_end(
-                        BuildStateInfo(
-                            intent=self.intent,
-                            provider=provider_config.tool_provider,  # Use tool_provider for callbacks
-                        )
-                    )
-                except Exception as e:
-                    # Log full stack trace at debug level
-                    import traceback
-
-                    logger.debug(
-                        f"Error in callback {callback.__class__.__name__}.on_build_end: {e}\n{traceback.format_exc()}"
-                    )
-
-                    # Log a shorter message at warning level
-                    logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_end: {str(e)[:50]}")
 
         except Exception as e:
             self.state = ModelState.ERROR
