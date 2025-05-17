@@ -51,6 +51,7 @@ from plexe.datasets import DatasetGenerator
 from plexe.callbacks import Callback, BuildStateInfo, ChainOfThoughtModelCallback
 from plexe.internal.common.utils.chain_of_thought.emitters import ConsoleEmitter
 from plexe.agents.schema_resolver import SchemaResolverAgent
+from plexe.agents.dataset_analyser import EdaAgent
 from plexe.internal.agents import PlexeAgent
 from plexe.internal.common.datasets.interface import Dataset, TabularConvertible
 from plexe.internal.common.datasets.adapter import DatasetAdapter
@@ -135,7 +136,7 @@ class Model:
         self.predictor_source: str | None = None
         self.artifacts: List[Artifact] = []
         self.metric: Metric | None = None
-        self.metadata: Dict[str, str] = dict()  # todo: initialise metadata, etc
+        self.metadata: Dict[str, Any] = dict()  # todo: initialise metadata, etc
 
         # Registries used to make datasets, artifacts and other objects available across the system
         self.object_registry = ObjectRegistry()
@@ -214,7 +215,18 @@ class Model:
             }
             self.object_registry.register_multiple(TabularConvertible, self.training_data)
 
-            # Step 2: define model schemas using the SchemaResolverAgent (only if schemas are not provided)
+            # Step 2: run the EDA agent to analyze datasets
+            eda_agent = EdaAgent(
+                model_id=provider_config.orchestrator_provider,
+                verbose=verbose,
+                chain_of_thought_callable=cot_callable,
+            )
+            eda_agent.run(
+                intent=self.intent,
+                dataset_names=list(self.training_data.keys()),
+            )
+
+            # Step 3: define model schemas using the SchemaResolverAgent (only if schemas are not provided)
             if self.input_schema is not None:
                 self.object_registry.register(dict, "input_schema", format_schema(self.input_schema))
             if self.output_schema is not None:
@@ -222,7 +234,7 @@ class Model:
 
             # Create and run the schema resolver agent
             schema_resolver_agent = SchemaResolverAgent(
-                model_id=provider_config.tool_provider,
+                model_id=provider_config.orchestrator_provider,
                 verbose=verbose,
                 chain_of_thought_callable=cot_callable,
             )
@@ -269,10 +281,23 @@ class Model:
                     # Log a shorter message at warning level
                     logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_start: {str(e)[:50]}")
 
-            # Step 3: generate model
+            # Step 4: generate model
             # Start the model generation run
             # Get schema reasoning if available
             schema_reasoning = self.object_registry.get(str, "schema_reasoning")
+
+            # Get EDA report names to provide context to the agents
+            eda_report_names = []
+            try:
+                # Look for EDA reports in the object registry
+                eda_report_names = [
+                    name.split("://")[1]
+                    for name in self.object_registry.list()
+                    if str(dict) in name and "eda_report_" in name
+                ]
+                logger.debug(f"Found EDA reports: {eda_report_names}")
+            except (IndexError, KeyError) as e:
+                logger.warning(f"Unable to extract EDA report names: {str(e)}")
 
             agent_prompt = prompt_templates.agent_builder_prompt(
                 intent=self.intent,
@@ -356,6 +381,10 @@ class Model:
             self.metadata["engineer_provider"] = str(provider_config.engineer_provider)
             self.metadata["ops_provider"] = str(provider_config.ops_provider)
             self.metadata["tool_provider"] = str(provider_config.tool_provider)
+
+            # Store EDA results in metadata
+            for name, dataset in self.training_data.items():
+                self.metadata["eda_report"] = self.object_registry.get(dict, f"eda_report_{name}")
 
             self.state = ModelState.READY
 
