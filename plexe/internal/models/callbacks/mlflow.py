@@ -46,7 +46,7 @@ class MLFlowCallback(Callback):
         except Exception as e:
             raise RuntimeError(f"❌  Error cleaning up active runs: {e}") from e
 
-        # Set up MLFlow tracking URI and experiment
+        # Configure MLFlow Tracking
         try:
             # Set connection timeout for API calls
             import os
@@ -58,6 +58,18 @@ class MLFlowCallback(Callback):
         except Exception as e:
             raise RuntimeError(f"❌  Error setting up MLFlow: {e}") from e
 
+        # Create experiment
+        self.experiment_id = mlflow.create_experiment(self.experiment_name)
+        mlflow.set_experiment(experiment_name=self.experiment_name)
+        logger.debug(f"✅  MLFlow configured with experiment '{self.experiment_name}' (ID: {self.experiment_id})")
+
+        # Set up MLFlow Tracing
+        try:
+            mlflow.smolagents.autolog()
+            logger.debug("✅  MLFlow smolagents autolog enabled")
+        except ModuleNotFoundError:
+            logger.debug("❌  MLFlow smolagents autolog not available. Please install the required package.")
+
     def on_build_start(self, info: BuildStateInfo) -> None:
         """
         Start MLFlow parent run and log initial parameters.
@@ -68,10 +80,11 @@ class MLFlowCallback(Callback):
         experiment = mlflow.get_experiment_by_name(self.experiment_name)
         if experiment is None:
             self.experiment_id = mlflow.create_experiment(self.experiment_name)
+            mlflow.set_experiment(experiment_name=self.experiment_name)
+            logger.debug(f"✅  MLFlow configured with experiment '{self.experiment_name}' (ID: {self.experiment_id})")
+            print(f"✅  MLFlow: tracking URI '{self.tracking_uri}', experiment '{self.experiment_name}'")
         else:
             self.experiment_id = experiment.experiment_id
-        logger.debug(f"✅  MLFlow configured with experiment '{self.experiment_name}' (ID: {self.experiment_id})")
-        print(f"✅  MLFlow: tracking URI '{self.tracking_uri}', experiment '{self.experiment_name}'")
         # TODO: Start an MLFlow parent run
 
     def on_build_end(self, info: BuildStateInfo) -> None:
@@ -81,6 +94,29 @@ class MLFlowCallback(Callback):
         :param info: Information about the model building process end.
         """
         try:
+            # Only try to access metadata if the node attribute exists and has metadata
+            if hasattr(info, "node") and info.node and hasattr(info.node, "metadata"):
+                node_metadata = getattr(info.node, "metadata", {})
+                if node_metadata and "eda_markdown_reports" in node_metadata:
+                    for dataset_name, report_markdown in node_metadata["eda_markdown_reports"].items():
+                        try:
+                            # Save markdown to a file
+                            report_path = Path(f"eda_report_{dataset_name}.md")
+                            with open(report_path, "w") as f:
+                                f.write(report_markdown)
+                            # Log as artifact
+                            mlflow.log_artifact(str(report_path))
+                            # Clean up
+                            report_path.unlink(missing_ok=True)
+                            logger.debug(f"✅ Logged EDA report for dataset '{dataset_name}' as MLflow artifact")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not log EDA report for dataset '{dataset_name}': {e}")
+                            # Attempt cleanup
+                            try:
+                                Path(f"eda_report_{dataset_name}.md").unlink(missing_ok=True)
+                            except Exception:
+                                pass
+
             if mlflow.active_run():
                 mlflow.end_run()
         except Exception as e:

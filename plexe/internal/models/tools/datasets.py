@@ -12,8 +12,10 @@ from datetime import datetime
 from typing import Dict, List, Any
 
 import numpy as np
+import pandas as pd
 from smolagents import tool
 
+from plexe.internal.common.datasets.adapter import DatasetAdapter
 from plexe.internal.common.datasets.interface import TabularConvertible
 from plexe.internal.common.registries.objects import ObjectRegistry
 
@@ -21,35 +23,39 @@ logger = logging.getLogger(__name__)
 
 
 @tool
-def split_datasets(
-    datasets: List[str],
-    train_ratio: float = 0.9,
-    val_ratio: float = 0.1,
-    test_ratio: float = 0.0,
-    is_time_series: bool = False,
-    time_index_column: str = None,
+def register_split_datasets(
+    dataset_names: List[str],
+    train_datasets: List[pd.DataFrame],
+    validation_datasets: List[pd.DataFrame],
+    test_datasets: List[pd.DataFrame],
 ) -> Dict[str, List[str]]:
     """
-    Split datasets into train, validation, and test sets and register the new split datasets with
-    the dataset registry. After splitting and registration, the new dataset names can be used as valid references
-    for datasets.
+    Register train, validation, and test datasets in the object registry after custom splitting.
+
+    This tool allows the agent to register datasets after performing custom splitting logic.
 
     Args:
-        datasets: List of names for the datasets that need to be split
-        train_ratio: Ratio of data to use for training (default: 0.9)
-        val_ratio: Ratio of data to use for validation (default: 0.1)
-        test_ratio: Ratio of data to use for testing (default: 0.0)
-        is_time_series: Whether the data is chronological time series data (default: False)
-        time_index_column: Column name that represents the time index, required if is_time_series=True
+        dataset_names: Original dataset names that were split
+        train_datasets: List of pandas DataFrames containing training data
+        validation_datasets: List of pandas DataFrames containing validation data
+        test_datasets: List of pandas DataFrames containing test data
 
     Returns:
         Dictionary containing lists of registered dataset names:
         {
             "train_datasets": List of training dataset names,
             "validation_datasets": List of validation dataset names,
-            "test_datasets": List of test dataset names
+            "test_datasets": List of test dataset names,
+            "dataset_sizes": Dictionary with sizes of each dataset type
         }
     """
+    if (
+        len(dataset_names) != len(train_datasets)
+        or len(dataset_names) != len(validation_datasets)
+        or len(dataset_names) != len(test_datasets)
+    ):
+        raise ValueError("The number of dataset names must match the number of train, validation, and test datasets")
+
     # Initialize the dataset registry
     object_registry = ObjectRegistry()
 
@@ -58,33 +64,37 @@ def split_datasets(
     validation_dataset_names = []
     test_dataset_names = []
 
-    logger.debug("🔪 Splitting datasets into train, validation, and test sets")
-    for name in datasets:
-        dataset = object_registry.get(TabularConvertible, name)
-        train_ds, val_ds, test_ds = dataset.split(
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            test_ratio=test_ratio,
-            is_time_series=is_time_series,
-            time_index_column=time_index_column,
-        )
+    # Initialize the dataset sizes dictionary
+    dataset_sizes = {"train": [], "validation": [], "test": []}
+
+    # Register each split dataset
+    for i, name in enumerate(dataset_names):
+        # Convert pandas DataFrames to TabularDataset objects
+        train_ds = DatasetAdapter.coerce(train_datasets[i])
+        val_ds = DatasetAdapter.coerce(validation_datasets[i])
+        test_ds = DatasetAdapter.coerce(test_datasets[i])
 
         # Register split datasets in the registry
         train_name = f"{name}_train"
         val_name = f"{name}_val"
         test_name = f"{name}_test"
 
-        object_registry.register(TabularConvertible, train_name, train_ds)
-        object_registry.register(TabularConvertible, val_name, val_ds)
-        object_registry.register(TabularConvertible, test_name, test_ds)
+        object_registry.register(TabularConvertible, train_name, train_ds, overwrite=True)
+        object_registry.register(TabularConvertible, val_name, val_ds, overwrite=True)
+        object_registry.register(TabularConvertible, test_name, test_ds, overwrite=True)
 
         # Store dataset names
         train_dataset_names.append(train_name)
         validation_dataset_names.append(val_name)
         test_dataset_names.append(test_name)
 
+        # Store dataset sizes
+        dataset_sizes["train"].append(len(train_ds))
+        dataset_sizes["validation"].append(len(val_ds))
+        dataset_sizes["test"].append(len(test_ds))
+
         logger.debug(
-            f"✅ Split dataset {name} into train/validation/test with sizes "
+            f"✅ Registered custom split of dataset {name} into train/validation/test with sizes "
             f"{len(train_ds)}/{len(val_ds)}/{len(test_ds)}"
         )
 
@@ -92,6 +102,7 @@ def split_datasets(
         "train_datasets": train_dataset_names,
         "validation_datasets": validation_dataset_names,
         "test_datasets": test_dataset_names,
+        "dataset_sizes": dataset_sizes,
     }
 
 
@@ -143,6 +154,84 @@ def create_input_sample(input_schema: Dict[str, str], n_samples: int = 5) -> boo
     except Exception as e:
         logger.warning(f"⚠️ Error creating input sample for validation: {str(e)}")
         return False
+
+
+@tool
+def drop_null_columns(dataset_name: str) -> Dict[str, str]:
+    """
+    Drop all columns from the dataset that are completely null and register the modified dataset.
+
+    Args:
+        dataset_name: Name of the dataset to modify
+
+    Returns:
+        Dictionary containing results of the operation:
+        - dataset_name: Name of the modified dataset
+        - n_dropped: Number of columns dropped
+    """
+    object_registry = ObjectRegistry()
+
+    try:
+        # Get dataset from registry
+        dataset = object_registry.get(TabularConvertible, dataset_name)
+        df = dataset.to_pandas()
+
+        # Drop columns with all null values TODO: make this more intelligent
+        # Drop columns with >=50% missing values
+        null_columns = df.columns[df.isnull().mean() >= 0.5]
+
+        # Drop constant columns (zero variance)
+        constant_columns = [col for col in df.columns if df[col].nunique(dropna=False) == 1]
+
+        # Drop quasi-constant columns (e.g., one value in >95% of rows)
+        quasi_constant_columns = [
+            col for col in df.columns if (df[col].value_counts(dropna=False, normalize=True).values[0] > 0.95)
+        ]
+
+        # Drop columns with all unique values (likely IDs)
+        unique_columns = [col for col in df.columns if df[col].nunique(dropna=False) == len(df)]
+
+        # Drop duplicate columns
+        duplicate_columns = []
+        seen = {}
+        for col in df.columns:
+            col_data = df[col].to_numpy()
+            key = col_data.tobytes() if hasattr(col_data, "tobytes") else tuple(col_data)
+            if key in seen:
+                duplicate_columns.append(col)
+            else:
+                seen[key] = col
+
+        # Combine all columns to drop (set to avoid duplicates)
+        all_bad_columns = (
+            set(null_columns)
+            | set(constant_columns)
+            | set(quasi_constant_columns)
+            | set(unique_columns)
+            | set(duplicate_columns)
+        )
+        n_dropped = len(all_bad_columns)
+        df.drop(columns=list(all_bad_columns), inplace=True)
+
+        # Unregister the original dataset
+        object_registry.delete(TabularConvertible, dataset_name)
+
+        # Register the modified dataset
+        object_registry.register(TabularConvertible, dataset_name, DatasetAdapter.coerce(df))
+
+        logger.debug(f"✅ Dropped {n_dropped} null columns from dataset '{dataset_name}'")
+        return {
+            "dataset_name": dataset_name,
+            "n_dropped": n_dropped,
+        }
+
+    except Exception as e:
+        logger.warning(f"⚠️ Error dropping null columns: {str(e)}")
+        return {
+            "error": f"Failed to drop null columns from dataset '{dataset_name}': {str(e)}",
+            "dataset_name": dataset_name,
+            "n_dropped": 0,
+        }
 
 
 @tool
@@ -212,26 +301,29 @@ def get_dataset_preview(dataset_name: str) -> Dict[str, Any]:
 def register_eda_report(
     dataset_name: str,
     overview: Dict[str, Any],
-    feature_analysis: Dict[str, Any],
-    relationships: Dict[str, Any],
-    data_quality: Dict[str, Any],
+    feature_engineering_opportunities: Dict[str, Any],
+    data_quality_challenges: Dict[str, Any],
+    data_preprocessing_requirements: Dict[str, Any],
+    feature_importance: Dict[str, Any],
     insights: List[str],
     recommendations: List[str],
 ) -> bool:
     """
     Register an exploratory data analysis (EDA) report for a dataset in the Object Registry.
 
-    This tool creates a structured report with findings from exploratory data analysis and
-    registers it in the Object Registry for use by other agents.
+    This tool creates a structured report with actionable ML engineering insights from exploratory
+    data analysis and registers it in the Object Registry for use by other agents.
 
     Args:
         dataset_name: Name of the dataset that was analyzed
-        overview: General dataset statistics including shape, data types, memory usage
-        feature_analysis: Analysis of individual features with distributions and statistics
-        relationships: Correlation analysis and feature relationships
-        data_quality: Information about missing values, outliers, and data issues
-        insights: Key insights derived from the analysis
-        recommendations: Recommendations for preprocessing and modeling
+        overview: Essential dataset statistics including target variable analysis
+        feature_engineering_opportunities: Specific transformation needs, interaction effects,
+                                          and engineered features that would improve model performance
+        data_quality_challenges: Critical data issues with specific handling recommendations
+        data_preprocessing_requirements: Necessary preprocessing steps with clear justification
+        feature_importance: Assessment of feature predictive potential and relevance
+        insights: Key insights derived from the analysis that directly impact feature engineering
+        recommendations: Specific, prioritized actions for preprocessing and feature engineering
 
     Returns:
         True if the report was successfully registered, False otherwise
@@ -239,14 +331,15 @@ def register_eda_report(
     object_registry = ObjectRegistry()
 
     try:
-        # Create structured EDA report
+        # Create structured EDA report with actionable ML focus
         eda_report = {
             "dataset_name": dataset_name,
             "timestamp": datetime.now().isoformat(),
             "overview": overview,
-            "feature_analysis": feature_analysis,
-            "relationships": relationships,
-            "data_quality": data_quality,
+            "feature_engineering_opportunities": feature_engineering_opportunities,
+            "data_quality_challenges": data_quality_challenges,
+            "data_preprocessing_requirements": data_preprocessing_requirements,
+            "feature_importance": feature_importance,
             "insights": insights,
             "recommendations": recommendations,
         }
@@ -278,6 +371,10 @@ def get_eda_report(dataset_name: str) -> Dict[str, Any]:
     object_registry = ObjectRegistry()
 
     try:
+        # If name ends in _train, _val, or _test, strip it to get the original dataset name
+        if dataset_name.endswith(("_train", "_val", "_test")):
+            dataset_name = dataset_name.rsplit("_", 1)[0]
+
         # Check if EDA report exists
         report_key = f"eda_report_{dataset_name}"
 

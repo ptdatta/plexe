@@ -12,7 +12,7 @@ from smolagents import LiteLLMModel, CodeAgent
 
 from plexe.config import prompt_templates
 from plexe.internal.common.utils.agents import get_prompt_templates
-from plexe.internal.models.tools.datasets import register_eda_report
+from plexe.internal.models.tools.datasets import register_eda_report, drop_null_columns
 from plexe.internal.models.tools.schemas import get_raw_dataset_schema
 
 logger = logging.getLogger(__name__)
@@ -55,13 +55,22 @@ class EdaAgent:
                 "to generate insights and recommendations for ML modeling."
             ),
             model=LiteLLMModel(model_id=self.model_id),
-            tools=[register_eda_report, get_raw_dataset_schema],
+            tools=[drop_null_columns, register_eda_report, get_raw_dataset_schema],
             add_base_tools=False,
             verbosity_level=self.verbosity,
             # planning_interval=3,
             max_steps=30,
             step_callbacks=[chain_of_thought_callable],
-            additional_authorized_imports=["pandas", "numpy", "plexe"],
+            additional_authorized_imports=[
+                "pandas",
+                "pandas.*",
+                "numpy",
+                "numpy.*",
+                "plexe",
+                "plexe.*",
+                "scipy",
+                "scipy.*",
+            ],
             prompt_templates=get_prompt_templates("code_agent.yaml", "eda_prompt_templates.yaml"),
         )
 

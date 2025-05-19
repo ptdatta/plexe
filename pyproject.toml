@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "plexe"
-version = "0.20.0"
+version = "0.21.0"
 description = "An agentic framework for building ML models from natural language"
 authors = [
     "marcellodebernardi <marcello.debernardi@outlook.com>",
@@ -47,23 +47,22 @@ numpy = ">=1.23.2,<2.0.0"
 black = "^24.10.0"
 jinja2 = "^3.1.6"
 platformdirs = "^4.3.7"
-mlflow = "^2.21.3"
+mlflow = "^3.0.0rc2"
 ray = "^2.9.0"
 rich = "^13.7.1"
-smolagents = "1.13.0"
+torch = "^2.3.0"
+smolagents = "1.14.0"
 
 # Deep learning dependencies
-torch = { version = ">=2.0.0,<2.3.0", optional = true }
-transformers = { version = "4.35.2", optional = true }
-tokenizers = { version = "^0.15.1", optional = true }
+transformers = { version = "^4.50.0", optional = true }
+tokenizers = { version = "^0.21.1", optional = true }
 accelerate = { version = "0.24.1", optional = true }
 safetensors = { version = "^0.4.1", optional = true }
 gradio = "^5.26.0"
 
 [tool.poetry.extras]
-all = ["torch", "transformers", "tokenizers", "accelerate", "safetensors"]
-deep-learning = ["torch", "transformers", "tokenizers", "accelerate", "safetensors"]
-torch = ["torch"]
+all = ["transformers", "tokenizers", "accelerate", "safetensors"]
+deep-learning = ["transformers", "tokenizers", "accelerate", "safetensors"]
 lightweight = []
 
 [tool.poetry.group.dev.dependencies]

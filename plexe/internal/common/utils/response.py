@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+import pandas as pd
 
 import black
 
@@ -113,3 +114,91 @@ def extract_performance(output: str) -> float | None:
 
     except Exception as e:
         raise RuntimeError(f"Error extracting run performance: {e}") from e
+
+
+def extract_json_array(text: str) -> str:
+    """
+    Extract a JSON array from an LLM response, handling common formatting issues.
+
+    This function cleans up LLM responses that may contain JSON arrays embedded in
+    markdown code blocks, additional explanatory text, or other formatting artifacts.
+
+    Args:
+        text: The raw text output from an LLM
+
+    Returns:
+        A cleaned JSON array string ready for parsing
+    """
+    cleaned_text = text
+
+    # Remove code block markers if present
+    if "```" in cleaned_text:
+        json_match = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned_text, re.DOTALL)
+        if json_match:
+            cleaned_text = json_match.group(1)
+
+    # Remove any language tags or backticks
+    cleaned_text = cleaned_text.replace("json", "").replace("`", "").strip()
+
+    # Find the actual JSON array if needed
+    start_idx = cleaned_text.find("[")
+    end_idx = cleaned_text.rfind("]")
+    if start_idx >= 0 and end_idx >= 0:
+        cleaned_text = cleaned_text[start_idx : end_idx + 1]
+
+    return cleaned_text
+
+
+def json_to_dataframe(text: str) -> "pd.DataFrame":
+    """
+    Convert LLM-generated JSON text to a pandas DataFrame.
+
+    This function handles common errors in LLM responses when creating DataFrames:
+    1. Extracts and cleans the JSON array from text
+    2. Validates it's a proper array structure
+    3. Creates a DataFrame with appropriate error handling
+
+    Args:
+        text: Raw text output from an LLM that should contain a JSON array
+
+    Returns:
+        pandas DataFrame created from the JSON data
+
+    Raises:
+        ValueError: If the response can't be parsed as a valid JSON array
+    """
+    import pandas as pd
+
+    # Extract the JSON array text
+    json_text = extract_json_array(text)
+
+    try:
+        # Parse the JSON
+        data = json.loads(json_text)
+
+        # Handle both single object and array of objects
+        if not isinstance(data, list):
+            # If it's a single object, convert it to a list with one item
+            if isinstance(data, dict):
+                logger.warning("JSON is a single object, converting to list")
+                data = [data]
+            else:
+                raise ValueError(f"JSON is not an array or object: {json_text[:100]}...")
+
+        # Check if it's empty
+        if len(data) == 0:
+            logger.warning("JSON array is empty")
+            # Return empty DataFrame
+            return pd.DataFrame()
+
+        # Create DataFrame from the parsed JSON array
+        return pd.DataFrame(data)
+
+    except json.JSONDecodeError as e:
+        # Log details about the error
+        logger.error(f"Failed to parse JSON: {str(e)}")
+        logger.debug(f"Attempted to parse: {json_text[:200]}...")
+        raise ValueError(f"Invalid JSON format: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error converting JSON to DataFrame: {str(e)}")
+        raise ValueError(f"Error converting JSON to DataFrame: {str(e)}")

@@ -71,7 +71,7 @@ def save_model(model: Model, path: str | Path) -> str:
             for key, value in metadata.items():
                 if key in ["metrics", "metadata"]:
                     info = tarfile.TarInfo(f"metadata/{key}.json")
-                    content = json.dumps(value, indent=2).encode("utf-8")
+                    content = json.dumps(value, indent=2, default=str).encode("utf-8")
                 else:
                     info = tarfile.TarInfo(f"metadata/{key}.txt")
                     content = str(value).encode("utf-8")
@@ -81,7 +81,7 @@ def save_model(model: Model, path: str | Path) -> str:
             for name, schema in [("input_schema", model.input_schema), ("output_schema", model.output_schema)]:
                 schema_dict = {name: field.annotation.__name__ for name, field in schema.model_fields.items()}
                 info = tarfile.TarInfo(f"schemas/{name}.json")
-                content = json.dumps(schema_dict).encode("utf-8")
+                content = json.dumps(schema_dict, default=str).encode("utf-8")
                 info.size = len(content)
                 tar.addfile(info, io.BytesIO(content))
 
@@ -117,6 +117,14 @@ def save_model(model: Model, path: str | Path) -> str:
                 content = pickle.dumps(model.constraints)
                 info.size = len(content)
                 tar.addfile(info, io.BytesIO(content))
+
+            # Save EDA markdown reports if available
+            if "eda_markdown_reports" in model.metadata and model.metadata["eda_markdown_reports"]:
+                for dataset_name, report_markdown in model.metadata["eda_markdown_reports"].items():
+                    info = tarfile.TarInfo(f"metadata/eda_report_{dataset_name}.md")
+                    content = report_markdown.encode("utf-8")
+                    info.size = len(content)
+                    tar.addfile(info, io.BytesIO(content))
 
     except Exception as e:
         logger.error(f"Error saving model: {e}")
@@ -169,6 +177,14 @@ def load_model(path: str | Path) -> Model:
             if "metadata/constraints.pkl" in [m.name for m in tar.getmembers()]:
                 constraints = pickle.loads(tar.extractfile("metadata/constraints.pkl").read())
 
+            # Load EDA markdown reports if available
+            eda_markdown_reports = {}
+            for member in tar.getmembers():
+                if member.name.startswith("metadata/eda_report_") and member.name.endswith(".md"):
+                    dataset_name = member.name.replace("metadata/eda_report_", "").replace(".md", "")
+                    report_content = tar.extractfile(member).read().decode("utf-8")
+                    eda_markdown_reports[dataset_name] = report_content
+
             # Get handles for all model artifacts
             artifact_handles = []
             for member in tar.getmembers():
@@ -206,6 +222,10 @@ def load_model(path: str | Path) -> Model:
             model.metadata = metadata
             model.identifier = identifier
             model.trainer_source = trainer_source
+
+            # Add to the metadata if reports were found
+            if eda_markdown_reports:
+                model.metadata["eda_markdown_reports"] = eda_markdown_reports
             model.predictor_source = predictor_source
 
             if predictor_source:
