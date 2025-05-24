@@ -1,14 +1,12 @@
 """
 This module defines the `Model` class, which represents a machine learning model.
 
-A `Model` is characterized by a natural language description of its intent, structured input and output schemas,
-and optional constraints that the model must satisfy. This class provides methods for building the model, making
-predictions, and inspecting its state, metadata, and metrics.
+A `Model` is characterized by a natural language description of its intent, structured input and output schemas.
+This class provides methods for building the model, making predictions, and inspecting its state, metadata, and metrics.
 
 Key Features:
 - Intent: A natural language description of the model's purpose.
 - Input/Output Schema: Defines the structure and types of inputs and outputs.
-- Constraints: Rules that must hold true for input/output pairs.
 - Mutable State: Tracks the model's lifecycle, training metrics, and metadata.
 - Build Process: Integrates solution generation with callbacks.
 - Chain of Thought: Captures the reasoning steps of the model building process.
@@ -46,20 +44,17 @@ import pandas as pd
 from pydantic import BaseModel
 
 from plexe.config import prompt_templates
-from plexe.constraints import Constraint
 from plexe.datasets import DatasetGenerator
-from plexe.callbacks import Callback, BuildStateInfo, ChainOfThoughtModelCallback
+from plexe.callbacks import Callback, BuildStateInfo, ChainOfThoughtModelCallback, ModelCheckpointCallback
 from plexe.internal.common.utils.chain_of_thought.emitters import ConsoleEmitter
-from plexe.agents.schema_resolver import SchemaResolverAgent
-from plexe.agents.dataset_analyser import EdaAgent
-from plexe.internal.agents import PlexeAgent
+from plexe.agents.agents import PlexeAgent
 from plexe.internal.common.datasets.interface import Dataset, TabularConvertible
 from plexe.internal.common.datasets.adapter import DatasetAdapter
 from plexe.internal.common.provider import ProviderConfig
-from plexe.internal.common.registries.objects import ObjectRegistry
+from plexe.core.object_registry import ObjectRegistry
 from plexe.internal.common.utils.model_utils import calculate_model_size, format_code_snippet
 from plexe.internal.common.utils.pydantic_utils import map_to_basemodel, format_schema
-from plexe.internal.common.utils.model_state import ModelState
+from plexe.core.state import ModelState  # Import from core package
 from plexe.internal.common.utils.markdown_utils import format_eda_report_markdown
 from plexe.internal.models.entities.artifact import Artifact
 from plexe.internal.models.entities.description import (
@@ -70,7 +65,7 @@ from plexe.internal.models.entities.description import (
     CodeInfo,
 )
 from plexe.internal.models.entities.metric import Metric
-from plexe.internal.models.interfaces.predictor import Predictor
+from plexe.core.interfaces.predictor import Predictor
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +75,12 @@ class Model:
     Represents a model that transforms inputs to outputs according to a specified intent.
 
     A `Model` is defined by a human-readable description of its expected intent, as well as structured
-    definitions of its input schema, output schema, and any constraints that must be satisfied by the model.
+    definitions of its input schema and output schema.
 
     Attributes:
         intent (str): A human-readable, natural language description of the model's expected intent.
         output_schema (dict): A mapping of output key names to their types.
         input_schema (dict): A mapping of input key names to their types.
-        constraints (List[Constraint]): A list of Constraint objects that represent rules which must be
-            satisfied by every input/output pair for the model.
 
     Example:
         model = Model(
@@ -106,18 +99,15 @@ class Model:
         intent: str,
         input_schema: Type[BaseModel] | Dict[str, type] = None,
         output_schema: Type[BaseModel] | Dict[str, type] = None,
-        constraints: List[Constraint] = None,
         distributed: bool = False,
     ):
         """
         Initialise a model with a natural language description of its intent, as well as
-        structured definitions of its input schema, output schema, and any constraints.
+        structured definitions of its input schema and output schema.
 
         :param intent: A human-readable, natural language description of the model's expected intent.
         :param input_schema: a pydantic model or dictionary defining the input schema
         :param output_schema: a pydantic model or dictionary defining the output schema
-        :param constraints: A list of Constraint objects that represent rules which must be
-            satisfied by every input/output pair for the model.
         :param distributed: Whether to use distributed training with Ray if available.
         """
         # todo: analyse natural language inputs and raise errors where applicable
@@ -126,7 +116,6 @@ class Model:
         self.intent: str = intent
         self.input_schema: Type[BaseModel] = map_to_basemodel("in", input_schema) if input_schema else None
         self.output_schema: Type[BaseModel] = map_to_basemodel("out", output_schema) if output_schema else None
-        self.constraints: List[Constraint] = constraints or []
         self.training_data: Dict[str, Dataset] = dict()
         self.distributed: bool = distributed
 
@@ -135,6 +124,10 @@ class Model:
         self.predictor: Predictor | None = None
         self.trainer_source: str | None = None
         self.predictor_source: str | None = None
+        self.feature_transformer_source: str | None = None
+        self.dataset_splitter_source: str | None = None
+        self.testing_source: str | None = None
+        self.evaluation_report: Dict | None = None
         self.artifacts: List[Artifact] = []
         self.metric: Metric | None = None
         self.metadata: Dict[str, Any] = dict()  # todo: initialise metadata, etc
@@ -157,7 +150,8 @@ class Model:
         run_timeout: int = 1800,
         callbacks: List[Callback] = None,
         verbose: bool = False,
-        chain_of_thought: bool = True,
+        # resume: bool = False,
+        enable_checkpointing: bool = False,
     ) -> None:
         """
         Build the model using the provided dataset and optional data generation configuration.
@@ -170,7 +164,7 @@ class Model:
         :param run_timeout: maximum time in seconds for each individual model training run
         :param callbacks: list of callbacks to notify during the model building process
         :param verbose: whether to display detailed agent logs during model building (default: False)
-        :param chain_of_thought: whether to display chain of thought output (default: True)
+        :param enable_checkpointing: whether to enable automatic checkpointing (default: True)
         :return:
         """
         # Ensure the object registry is cleared before building
@@ -179,14 +173,16 @@ class Model:
         # Initialize callbacks list if not provided
         callbacks = callbacks or []
 
-        # Add chain of thought callback if requested
-        cot_callable = None
-        if chain_of_thought:
-            cot_model_callback = ChainOfThoughtModelCallback(emitter=ConsoleEmitter())
-            callbacks.append(cot_model_callback)
+        # Add automatic checkpointing callback if enabled
+        if enable_checkpointing and not any(isinstance(cb, ModelCheckpointCallback) for cb in callbacks):
+            callbacks.append(ModelCheckpointCallback())
 
-            # Get the underlying callback for use with agents
-            cot_callable = cot_model_callback.get_chain_of_thought_callable()
+        # Add chain of thought callback
+        cot_model_callback = ChainOfThoughtModelCallback(emitter=ConsoleEmitter())
+        callbacks.append(cot_model_callback)
+
+        # Get the underlying callable for use with agents
+        cot_callable = cot_model_callback.get_chain_of_thought_callable()
 
         # Register all callbacks in the object registry
         self.object_registry.register_multiple(Callback, {f"{i}": c for i, c in enumerate(callbacks)})
@@ -197,8 +193,6 @@ class Model:
         if run_timeout is not None and timeout is not None and run_timeout > timeout:
             raise ValueError(f"Run timeout ({run_timeout}s) cannot exceed total timeout ({timeout}s)")
 
-        # TODO: validate that schema features are present in the dataset
-        # TODO: validate that datasets do not contain duplicate features
         try:
             # Convert string provider to config if needed
             if isinstance(provider, str):
@@ -214,43 +208,13 @@ class Model:
                 f"dataset_{i}": DatasetAdapter.coerce((data.data if isinstance(data, DatasetGenerator) else data))
                 for i, data in enumerate(datasets)
             }
-            self.object_registry.register_multiple(TabularConvertible, self.training_data)
+            self.object_registry.register_multiple(TabularConvertible, self.training_data, immutable=True)
 
-            # Step 2: run the EDA agent to analyze datasets
-            eda_agent = EdaAgent(
-                model_id=provider_config.orchestrator_provider,
-                verbose=verbose,
-                chain_of_thought_callable=cot_callable,
-            )
-            eda_agent.run(
-                intent=self.intent,
-                dataset_names=list(self.training_data.keys()),
-            )
-
-            # Step 3: define model schemas using the SchemaResolverAgent (only if schemas are not provided)
+            # Step 2: register input schemas into object registry, if they are provided
             if self.input_schema is not None:
-                self.object_registry.register(dict, "input_schema", format_schema(self.input_schema))
+                self.object_registry.register(dict, "input_schema", format_schema(self.input_schema), immutable=True)
             if self.output_schema is not None:
-                self.object_registry.register(dict, "output_schema", format_schema(self.output_schema))
-
-            # Create and run the schema resolver agent
-            schema_resolver_agent = SchemaResolverAgent(
-                model_id=provider_config.orchestrator_provider,
-                verbose=verbose,
-                chain_of_thought_callable=cot_callable,
-            )
-            schema_result = schema_resolver_agent.run(
-                intent=self.intent,
-                dataset_names=list(self.training_data.keys()),
-                user_input_schema=format_schema(self.input_schema) if self.input_schema else None,
-                user_output_schema=format_schema(self.output_schema) if self.output_schema else None,
-            )
-
-            # Convert the returned schemas to Pydantic models and update
-            if self.input_schema is None:
-                self.input_schema = map_to_basemodel("InputSchema", schema_result["input_schema"])
-            if self.output_schema is None:
-                self.output_schema = map_to_basemodel("OutputSchema", schema_result["output_schema"])
+                self.object_registry.register(dict, "output_schema", format_schema(self.output_schema), immutable=True)
 
             # Run callbacks for build start
             for callback in self.object_registry.get_all(Callback).values():
@@ -269,6 +233,7 @@ class Model:
                                 name: self.object_registry.get(TabularConvertible, name)
                                 for name in self.training_data.keys()
                             },
+                            model=self,  # Include reference to model for checkpoint callback
                         )
                     )
                 except Exception as e:
@@ -283,23 +248,6 @@ class Model:
                     logger.warning(f"Error in callback {callback.__class__.__name__}.on_build_start: {str(e)[:50]}")
 
             # Step 4: generate model
-            # Start the model generation run
-            # Get schema reasoning if available
-            schema_reasoning = self.object_registry.get(str, "schema_reasoning")
-
-            # Get EDA report names to provide context to the agents
-            eda_report_names = []
-            try:
-                # Look for EDA reports in the object registry
-                eda_report_names = [
-                    name.split("://")[1]
-                    for name in self.object_registry.list()
-                    if str(dict) in name and "eda_report_" in name
-                ]
-                logger.debug(f"Found EDA reports: {eda_report_names}")
-            except (IndexError, KeyError) as e:
-                logger.warning(f"Unable to extract EDA report names: {str(e)}")
-
             agent_prompt = prompt_templates.agent_builder_prompt(
                 intent=self.intent,
                 input_schema=json.dumps(format_schema(self.input_schema), indent=4),
@@ -307,8 +255,9 @@ class Model:
                 datasets=list(self.training_data.keys()),
                 working_dir=self.working_dir,
                 max_iterations=max_iterations,
-                schema_reasoning=schema_reasoning,
+                resume=False,
             )
+
             agent = PlexeAgent(
                 orchestrator_model_id=provider_config.orchestrator_provider,
                 ml_researcher_model_id=provider_config.research_provider,
@@ -320,18 +269,23 @@ class Model:
                 distributed=self.distributed,
                 chain_of_thought_callable=cot_callable,
             )
-            generated = agent.run(
-                agent_prompt,
-                additional_args={
-                    "intent": self.intent,
-                    "working_dir": self.working_dir,
-                    "input_schema": format_schema(self.input_schema),
-                    "output_schema": format_schema(self.output_schema),
-                    "max_iterations": max_iterations,
-                    "timeout": timeout,
-                    "run_timeout": run_timeout,
-                },
-            )
+
+            # Prepare agent args
+            additional_args = {
+                "intent": self.intent,
+                "working_dir": self.working_dir,
+                "input_schema": format_schema(self.input_schema),
+                "output_schema": format_schema(self.output_schema),
+                "max_iterations": max_iterations,
+                "timeout": timeout,
+                "run_timeout": run_timeout,
+            }
+
+            generated = agent.run(agent_prompt, additional_args=additional_args)
+
+            # Capture inferred schemas
+            self.input_schema = map_to_basemodel("InputSchema", self.object_registry.get(dict, "input_schema"))
+            self.output_schema = map_to_basemodel("OutputSchema", self.object_registry.get(dict, "output_schema"))
 
             # Run callbacks for build end
             for callback in self.object_registry.get_all(Callback).values():
@@ -350,6 +304,7 @@ class Model:
                                 name: self.object_registry.get(TabularConvertible, name)
                                 for name in self.training_data.keys()
                             },
+                            model=self,  # Include reference to model for checkpoint callback
                         )
                     )
                 except Exception as e:
@@ -366,6 +321,10 @@ class Model:
             # Step 4: update model state and attributes
             self.trainer_source = generated.training_source_code
             self.predictor_source = generated.inference_source_code
+            self.feature_transformer_source = generated.feature_transformer_source_code
+            self.dataset_splitter_source = generated.dataset_split_code
+            self.testing_source = generated.testing_source_code
+            self.evaluation_report = generated.evaluation_report
             self.predictor = generated.predictor
             self.artifacts = generated.model_artifacts
 
@@ -465,7 +424,6 @@ class Model:
         schemas = SchemaInfo(
             input=format_schema(self.input_schema),
             output=format_schema(self.output_schema),
-            constraints=[str(constraint) for constraint in self.constraints],
         )
 
         # Create implementation info
@@ -496,7 +454,9 @@ class Model:
 
         # Create code info
         code = CodeInfo(
-            training=format_code_snippet(self.trainer_source), prediction=format_code_snippet(self.predictor_source)
+            training=format_code_snippet(self.trainer_source),
+            prediction=format_code_snippet(self.predictor_source),
+            feature_transformations=format_code_snippet(self.feature_transformer_source),
         )
 
         # Assemble and return the complete model description

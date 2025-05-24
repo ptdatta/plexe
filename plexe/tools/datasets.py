@@ -4,7 +4,7 @@ Tools for dataset manipulation, splitting, and registration.
 These tools help with dataset operations within the model generation pipeline, including
 splitting datasets into training, validation, and test sets, registering datasets with
 the dataset registry, creating sample data for validation, previewing dataset content,
-and registering exploratory data analysis (EDA) reports.
+registering exploratory data analysis (EDA) reports, and registering feature engineering results.
 """
 
 import logging
@@ -17,92 +17,78 @@ from smolagents import tool
 
 from plexe.internal.common.datasets.adapter import DatasetAdapter
 from plexe.internal.common.datasets.interface import TabularConvertible
-from plexe.internal.common.registries.objects import ObjectRegistry
+from plexe.core.object_registry import ObjectRegistry
+from plexe.internal.models.entities.code import Code
 
 logger = logging.getLogger(__name__)
 
 
 @tool
 def register_split_datasets(
-    dataset_names: List[str],
-    train_datasets: List[pd.DataFrame],
-    validation_datasets: List[pd.DataFrame],
-    test_datasets: List[pd.DataFrame],
-) -> Dict[str, List[str]]:
+    dataset_name: str,
+    train_dataset: pd.DataFrame,
+    validation_dataset: pd.DataFrame,
+    test_dataset: pd.DataFrame,
+    splitting_code: str,
+) -> Dict[str, str]:
     """
     Register train, validation, and test datasets in the object registry after custom splitting.
-
     This tool allows the agent to register datasets after performing custom splitting logic.
 
     Args:
-        dataset_names: Original dataset names that were split
-        train_datasets: List of pandas DataFrames containing training data
-        validation_datasets: List of pandas DataFrames containing validation data
-        test_datasets: List of pandas DataFrames containing test data
+        dataset_name: Original name of the dataset that was split
+        train_dataset: pandas DataFrame containing training data
+        validation_dataset: pandas DataFrame containing validation data
+        test_dataset: pandas DataFrame containing test data
+        splitting_code: the code that was used to split the dataset
 
     Returns:
         Dictionary containing lists of registered dataset names:
         {
-            "train_datasets": List of training dataset names,
-            "validation_datasets": List of validation dataset names,
-            "test_datasets": List of test dataset names,
-            "dataset_sizes": Dictionary with sizes of each dataset type
+            "train_dataset": name of the training dataset,
+            "validation_dataset": name of the validation dataset,
+            "test_dataset": name of the test dataset,
+            "dataset_size": Dictionary with sizes of each dataset
         }
     """
-    if (
-        len(dataset_names) != len(train_datasets)
-        or len(dataset_names) != len(validation_datasets)
-        or len(dataset_names) != len(test_datasets)
-    ):
-        raise ValueError("The number of dataset names must match the number of train, validation, and test datasets")
 
     # Initialize the dataset registry
     object_registry = ObjectRegistry()
-
-    # Initialize dataset name lists
-    train_dataset_names = []
-    validation_dataset_names = []
-    test_dataset_names = []
 
     # Initialize the dataset sizes dictionary
     dataset_sizes = {"train": [], "validation": [], "test": []}
 
     # Register each split dataset
-    for i, name in enumerate(dataset_names):
-        # Convert pandas DataFrames to TabularDataset objects
-        train_ds = DatasetAdapter.coerce(train_datasets[i])
-        val_ds = DatasetAdapter.coerce(validation_datasets[i])
-        test_ds = DatasetAdapter.coerce(test_datasets[i])
+    # Convert pandas DataFrames to TabularDataset objects
+    train_ds = DatasetAdapter.coerce(train_dataset)
+    val_ds = DatasetAdapter.coerce(validation_dataset)
+    test_ds = DatasetAdapter.coerce(test_dataset)
 
-        # Register split datasets in the registry
-        train_name = f"{name}_train"
-        val_name = f"{name}_val"
-        test_name = f"{name}_test"
+    # Register split datasets in the registry
+    train_name = f"{dataset_name}_train"
+    val_name = f"{dataset_name}_val"
+    test_name = f"{dataset_name}_test"
 
-        object_registry.register(TabularConvertible, train_name, train_ds, overwrite=True)
-        object_registry.register(TabularConvertible, val_name, val_ds, overwrite=True)
-        object_registry.register(TabularConvertible, test_name, test_ds, overwrite=True)
+    object_registry.register(TabularConvertible, train_name, train_ds, overwrite=True, immutable=True)
+    object_registry.register(TabularConvertible, val_name, val_ds, overwrite=True, immutable=True)
+    object_registry.register(TabularConvertible, test_name, test_ds, overwrite=True, immutable=True)
+    object_registry.register(Code, "dataset_splitting_code", Code(splitting_code), overwrite=True)
 
-        # Store dataset names
-        train_dataset_names.append(train_name)
-        validation_dataset_names.append(val_name)
-        test_dataset_names.append(test_name)
+    # Store dataset sizes
+    dataset_sizes["train"].append(len(train_ds))
+    dataset_sizes["validation"].append(len(val_ds))
+    dataset_sizes["test"].append(len(test_ds))
 
-        # Store dataset sizes
-        dataset_sizes["train"].append(len(train_ds))
-        dataset_sizes["validation"].append(len(val_ds))
-        dataset_sizes["test"].append(len(test_ds))
-
-        logger.debug(
-            f"✅ Registered custom split of dataset {name} into train/validation/test with sizes "
-            f"{len(train_ds)}/{len(val_ds)}/{len(test_ds)}"
-        )
+    logger.debug(
+        f"✅ Registered custom split of dataset {dataset_name} into train/validation/test with sizes "
+        f"{len(train_ds)}/{len(val_ds)}/{len(test_ds)}"
+    )
 
     return {
-        "train_datasets": train_dataset_names,
-        "validation_datasets": validation_dataset_names,
-        "test_datasets": test_dataset_names,
-        "dataset_sizes": dataset_sizes,
+        "training_dataset": train_name,
+        "validation_dataset": val_name,
+        "test_dataset": test_name,
+        "dataset_size": dataset_sizes,
     }
 
 
@@ -157,7 +143,7 @@ def create_input_sample(input_schema: Dict[str, str], n_samples: int = 5) -> boo
 
 
 @tool
-def drop_null_columns(dataset_name: str) -> Dict[str, str]:
+def drop_null_columns(dataset_name: str) -> str:
     """
     Drop all columns from the dataset that are completely null and register the modified dataset.
 
@@ -217,21 +203,12 @@ def drop_null_columns(dataset_name: str) -> Dict[str, str]:
         object_registry.delete(TabularConvertible, dataset_name)
 
         # Register the modified dataset
-        object_registry.register(TabularConvertible, dataset_name, DatasetAdapter.coerce(df))
+        object_registry.register(TabularConvertible, dataset_name, DatasetAdapter.coerce(df), immutable=True)
 
-        logger.debug(f"✅ Dropped {n_dropped} null columns from dataset '{dataset_name}'")
-        return {
-            "dataset_name": dataset_name,
-            "n_dropped": n_dropped,
-        }
+        return f"Successfully dropped {n_dropped} null columns from dataset '{dataset_name}'"
 
     except Exception as e:
-        logger.warning(f"⚠️ Error dropping null columns: {str(e)}")
-        return {
-            "error": f"Failed to drop null columns from dataset '{dataset_name}': {str(e)}",
-            "dataset_name": dataset_name,
-            "n_dropped": 0,
-        }
+        raise RuntimeError(f"Failed to drop null columns from dataset '{dataset_name}': {str(e)}")
 
 
 @tool
@@ -307,7 +284,7 @@ def register_eda_report(
     feature_importance: Dict[str, Any],
     insights: List[str],
     recommendations: List[str],
-) -> bool:
+) -> str:
     """
     Register an exploratory data analysis (EDA) report for a dataset in the Object Registry.
 
@@ -344,14 +321,15 @@ def register_eda_report(
             "recommendations": recommendations,
         }
 
+        # TODO: separate EDA reports for raw and transformed data
         # Register in registry
-        object_registry.register(dict, f"eda_report_{dataset_name}", eda_report)
+        object_registry.register(dict, f"eda_report_{dataset_name}", eda_report, overwrite=True)
         logger.debug(f"✅ Registered EDA report for dataset '{dataset_name}'")
-        return True
+        return f"Successfully registered EDA report for dataset '{dataset_name}'"
 
     except Exception as e:
         logger.warning(f"⚠️ Error registering EDA report: {str(e)}")
-        return False
+        raise RuntimeError(f"Failed to register EDA report for dataset '{dataset_name}': {str(e)}")
 
 
 @tool
@@ -371,16 +349,32 @@ def get_eda_report(dataset_name: str) -> Dict[str, Any]:
     object_registry = ObjectRegistry()
 
     try:
-        # If name ends in _train, _val, or _test, strip it to get the original dataset name
-        if dataset_name.endswith(("_train", "_val", "_test")):
-            dataset_name = dataset_name.rsplit("_", 1)[0]
+        # Define suffixes in order of longest to shortest to ensure we match the longest applicable suffix
+        suffixes = [
+            "_transformed_train",
+            "_transformed_val",
+            "_transformed_test",
+            "_transformed",
+            "_train",
+            "_val",
+            "_test",
+        ]
+
+        # Sort suffixes by length (longest first) to ensure we remove the most specific match
+        suffixes.sort(key=len, reverse=True)
+
+        cleaned_dataset_name = dataset_name
+        for suffix in suffixes:
+            if cleaned_dataset_name.endswith(suffix):
+                cleaned_dataset_name = cleaned_dataset_name[: -len(suffix)]
+                break  # Stop after removing the first matching suffix
 
         # Check if EDA report exists
-        report_key = f"eda_report_{dataset_name}"
+        report_key = f"eda_report_{cleaned_dataset_name}"
 
         # Get the report from registry
         eda_report = object_registry.get(dict, report_key)
-        logger.debug(f"✅ Retrieved EDA report for dataset '{dataset_name}'")
+        logger.debug(f"✅ Retrieved EDA report for dataset '{cleaned_dataset_name}'")
         return eda_report
 
     except KeyError:

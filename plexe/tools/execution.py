@@ -1,5 +1,6 @@
 """
-Tools related to code execution, including running training code in isolated environments.
+Tools related to code execution, including running training code in isolated environments and
+applying feature transformations to datasets.
 
 These tools automatically handle model artifact registration through the ArtifactRegistry,
 ensuring that artifacts generated during the execution can be retrieved later in the pipeline.
@@ -7,19 +8,21 @@ ensuring that artifacts generated during the execution can be retrieved later in
 
 import logging
 import uuid
-from typing import Dict, List, Callable
+import types
+import warnings
+from typing import Dict, List, Callable, Type
 
 from smolagents import tool
 
 from plexe.callbacks import Callback
 from plexe.internal.common.datasets.interface import TabularConvertible
-from plexe.internal.common.registries.objects import ObjectRegistry
+from plexe.internal.common.datasets.adapter import DatasetAdapter
+from plexe.core.object_registry import ObjectRegistry
 from plexe.internal.models.entities.code import Code
 from plexe.internal.models.entities.artifact import Artifact
 from plexe.internal.models.entities.metric import Metric, MetricComparator, ComparisonMethod
 from plexe.internal.models.entities.node import Node
 from plexe.internal.models.execution.process_executor import ProcessExecutor
-from typing import Type
 
 logger = logging.getLogger(__name__)
 
@@ -237,3 +240,56 @@ def _notify_callbacks(callbacks: Dict, event_type: str, build_state_info) -> Non
             )
             # Log a shorter message at warning level
             logger.warning(f"Error in callback {callback.__class__.__name__}.{method_name}: {str(e)[:50]}")
+
+
+@tool
+def apply_feature_transformer(dataset_name: str) -> Dict:
+    """
+    Applies a feature transformer to datasets and registers the transformed datasets. The name of the
+    new transformed dataset is returned in the response.
+
+    Args:
+        dataset_name: Name of datasets to transform
+
+    Returns:
+        Dictionary with results of transformation:
+        - success: Boolean indicating success or failure
+        - original_dataset_name: Name of the original dataset
+        - new_dataset_name: Name of the transformed dataset
+    """
+    object_registry = ObjectRegistry()
+
+    try:
+        # Get feature transformer code from registry
+        code_obj = object_registry.get(Code, "feature_transformations")
+        transformer_code = code_obj.code
+
+        # Load code as module
+        module = types.ModuleType("feature_transformer_module")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            exec(transformer_code, module.__dict__)
+
+        # Instantiate transformer
+        transformer = module.FeatureTransformerImplementation()
+
+        # Get dataset
+        dataset = object_registry.get(TabularConvertible, dataset_name)
+        df = dataset.to_pandas()
+
+        # Apply transformation
+        transformed_df = transformer.transform(df)
+
+        # Register transformed dataset
+        transformed_name = f"{dataset_name}_transformed"
+        transformed_ds = DatasetAdapter.coerce(transformed_df)
+        object_registry.register(TabularConvertible, transformed_name, transformed_ds, overwrite=True)
+
+        logger.debug(f"✅ Applied feature transformer to {dataset_name} → {transformed_name}")
+
+        return {"success": True, "original_dataset_name": dataset_name, "new_dataset_name": transformed_name}
+    except Exception as e:
+        import traceback
+
+        logger.debug(f"Error applying feature transformer: {str(e)}\n{traceback.format_exc()}")
+        return {"success": False, "error": str(e), "transformed_datasets": []}

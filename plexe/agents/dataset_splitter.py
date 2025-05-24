@@ -13,8 +13,8 @@ from smolagents import CodeAgent, LiteLLMModel
 
 from plexe.config import config
 from plexe.internal.common.utils.agents import get_prompt_templates
-from plexe.internal.models.tools.datasets import get_dataset_preview, get_eda_report
-from plexe.internal.models.tools.datasets import register_split_datasets
+from plexe.tools.datasets import get_dataset_preview, get_eda_report
+from plexe.tools.datasets import register_split_datasets
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class DatasetSplitterAgent:
 
     def __init__(
         self,
-        model_id: str = "openai/gpt-4o",
+        model_id: str,
         verbose: bool = False,
         chain_of_thought_callable: Optional[Callable] = None,
     ):
@@ -52,7 +52,7 @@ class DatasetSplitterAgent:
                 "Expert data engineer that intelligently splits datasets for machine learning tasks. "
                 "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
                 "- the ML task definition (i.e. 'intent')"
-                "- the registered names of datasets to split"
+                "- the registered NAME of the dataset to split"
                 "- the split ratios (train_ratio, val_ratio, test_ratio)"
                 "- any helpful information or specific requirements for the split"
             ),

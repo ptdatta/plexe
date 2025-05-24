@@ -7,31 +7,32 @@ import types
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Callable
 
-from smolagents import CodeAgent, LiteLLMModel, ToolCallingAgent
+from smolagents import CodeAgent, LiteLLMModel
 
-from plexe.agents.model_trainer import ModelTrainerAgent
+from plexe.agents.dataset_analyser import EdaAgent
 from plexe.agents.dataset_splitter import DatasetSplitterAgent
+from plexe.agents.feature_engineer import FeatureEngineeringAgent
+from plexe.agents.model_packager import ModelPackagerAgent
+from plexe.agents.model_planner import ModelPlannerAgent
+from plexe.agents.model_tester import ModelTesterAgent
+from plexe.agents.model_trainer import ModelTrainerAgent
+from plexe.agents.schema_resolver import SchemaResolverAgent
 from plexe.config import config
-from plexe.internal.common.registries.objects import ObjectRegistry
+from plexe.core.object_registry import ObjectRegistry
 from plexe.internal.common.utils.agents import get_prompt_templates
 from plexe.internal.models.entities.artifact import Artifact
 from plexe.internal.models.entities.code import Code
 from plexe.internal.models.entities.metric import Metric
 from plexe.internal.models.entities.metric import MetricComparator, ComparisonMethod
-from plexe.internal.models.interfaces.predictor import Predictor
-from plexe.internal.models.tools.context import get_inference_context_tool
-from plexe.internal.models.tools.datasets import (
+from plexe.core.interfaces.predictor import Predictor
+from plexe.tools.datasets import (
     create_input_sample,
-    get_dataset_preview,
-    get_eda_report,
 )
-from plexe.internal.models.tools.evaluation import get_review_finalised_model
-from plexe.internal.models.tools.metrics import get_select_target_metric
-from plexe.internal.models.tools.response_formatting import (
+from plexe.tools.evaluation import get_review_finalised_model
+from plexe.tools.metrics import get_select_target_metric
+from plexe.tools.response_formatting import (
     format_final_orchestrator_agent_response,
-    format_final_mlops_agent_response,
 )
-from plexe.internal.models.tools.validation import validate_inference_code
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,14 @@ logger = logging.getLogger(__name__)
 class ModelGenerationResult:
     training_source_code: str
     inference_source_code: str
+    feature_transformer_source_code: str
+    dataset_split_code: str
     predictor: Predictor
     model_artifacts: List[Artifact]
     performance: Metric  # Validation performance
     test_performance: Metric = None  # Test set performance
+    testing_source_code: str = None  # Testing code from model tester agent
+    evaluation_report: Dict = None  # Evaluation report from model tester agent
     metadata: Dict[str, str] = field(default_factory=dict)  # Model metadata
 
 
@@ -92,28 +97,36 @@ class PlexeAgent:
         self.chain_of_thought_callable = chain_of_thought_callable
 
         # Set verbosity levels
-        self.orchestrator_verbosity = 2 if verbose else 0
+        self.orchestrator_verbosity = 1 if verbose else 0
         self.specialist_verbosity = 1 if verbose else 0
 
         # Create solution planner agent - plans ML approaches
-        self.ml_research_agent = ToolCallingAgent(
-            name="MLResearchScientist",
-            description=(
-                "Expert ML researcher that develops detailed solution ideas and plans for ML use cases. "
-                "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
-                "- the ML task definition (i.e. 'intent')"
-                "- input schema for the model"
-                "- output schema for the model"
-                "- the name and comparison method of the metric to optimise"
-                "- the name of the dataset to use for training"
-            ),
-            model=LiteLLMModel(model_id=self.ml_researcher_model_id),
-            tools=[get_dataset_preview, get_eda_report],
-            add_base_tools=False,
-            verbosity_level=self.specialist_verbosity,
-            prompt_templates=get_prompt_templates("toolcalling_agent.yaml", "mls_prompt_templates.yaml"),
-            step_callbacks=[self.chain_of_thought_callable],
-        )
+        self.ml_research_agent = ModelPlannerAgent(
+            model_id=self.ml_researcher_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=chain_of_thought_callable,
+        ).agent
+
+        # Create and run the schema resolver agent
+        self.schema_resolver_agent = SchemaResolverAgent(
+            model_id=self.orchestrator_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=chain_of_thought_callable,
+        ).agent
+
+        # Create the EDA agent to analyze the dataset
+        self.eda_agent = EdaAgent(
+            model_id=self.orchestrator_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=chain_of_thought_callable,
+        ).agent
+
+        # Create feature engineering agent - transforms raw datasets for better model performance
+        self.feature_engineering_agent = FeatureEngineeringAgent(
+            model_id=self.ml_engineer_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=self.chain_of_thought_callable,
+        ).agent
 
         # Create dataset splitter agent - intelligently splits datasets
         self.dataset_splitter_agent = DatasetSplitterAgent(
@@ -132,28 +145,19 @@ class PlexeAgent:
         ).agent
 
         # Create predictor builder agent - creates inference code
-        self.mlops_engineer = CodeAgent(
-            name="MLOperationsEngineer",
-            description=(
-                "Expert ML operations engineer that analyzes training code and creates high-quality production-ready "
-                "inference code for ML models. To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
-                "- input schema for the model"
-                "- output schema for the model"
-                "- the 'training code id' of the training code produced by the MLEngineer agent"
-            ),
-            model=LiteLLMModel(model_id=self.ml_ops_engineer_model_id),
-            tools=[
-                get_inference_context_tool(self.tool_model_id),
-                validate_inference_code,
-                format_final_mlops_agent_response,
-            ],
-            add_base_tools=False,
-            verbosity_level=self.specialist_verbosity,
-            additional_authorized_imports=config.code_generation.authorized_agent_imports + ["plexe", "plexe.*"],
-            prompt_templates=get_prompt_templates("code_agent.yaml", "mlops_prompt_templates.yaml"),
-            planning_interval=8,
-            step_callbacks=[self.chain_of_thought_callable],
-        )
+        self.mlops_engineer = ModelPackagerAgent(
+            model_id=self.ml_ops_engineer_model_id,
+            tool_model_id=self.tool_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=self.chain_of_thought_callable,
+        ).agent
+
+        # Create model tester agent - tests and evaluates the finalized model
+        self.model_tester_agent = ModelTesterAgent(
+            model_id=self.ml_engineer_model_id,
+            verbose=verbose,
+            chain_of_thought_callable=self.chain_of_thought_callable,
+        ).agent
 
         # Create orchestrator agent - coordinates the workflow
         self.manager_agent = CodeAgent(
@@ -165,7 +169,16 @@ class PlexeAgent:
                 create_input_sample,
                 format_final_orchestrator_agent_response,
             ],
-            managed_agents=[self.ml_research_agent, self.dataset_splitter_agent, self.mle_agent, self.mlops_engineer],
+            managed_agents=[
+                self.eda_agent,
+                self.schema_resolver_agent,
+                self.feature_engineering_agent,
+                self.ml_research_agent,
+                self.dataset_splitter_agent,
+                self.mle_agent,
+                self.mlops_engineer,
+                self.model_tester_agent,
+            ],
             add_base_tools=False,
             verbosity_level=self.orchestrator_verbosity,
             additional_authorized_imports=config.code_generation.authorized_agent_imports,
@@ -184,6 +197,8 @@ class PlexeAgent:
         """
         object_registry = ObjectRegistry()
         result = self.manager_agent.run(task=task, additional_args=additional_args)
+
+        print(f"Registry contents: {str(object_registry.list())}")
 
         try:
             # Only log the full result when in verbose mode
@@ -235,13 +250,55 @@ class PlexeAgent:
             predictor_class = getattr(inference_module, "PredictorImplementation")
             predictor = predictor_class(object_registry.get_all(Artifact).values())
 
+            # Get feature transformer code if available
+            feature_transformer_code = None
+            try:
+                feature_code = object_registry.get(Code, "feature_transformations")
+                if feature_code:
+                    feature_transformer_code = feature_code.code
+            except KeyError:
+                # No feature transformations code found, that's ok
+                pass
+
+            # Get dataset split code if available
+            dataset_split_code = None
+            try:
+                dataset_split_code = object_registry.get(Code, "dataset_splitting_code")
+                if dataset_split_code:
+                    dataset_split_code = dataset_split_code.code
+            except KeyError:
+                # No dataset split code found, that's ok
+                pass
+
+            # Get testing code if available
+            testing_code = None
+            try:
+                testing_code_obj = object_registry.get(Code, "model_testing_code")
+                if testing_code_obj:
+                    testing_code = testing_code_obj.code
+            except KeyError:
+                # No testing code found, that's ok
+                pass
+
+            # Get evaluation report if available
+            evaluation_report = None
+            try:
+                evaluation_report = object_registry.get(dict, "model_evaluation_report")
+            except KeyError:
+                # No evaluation report found, that's ok
+                pass
+
             return ModelGenerationResult(
                 training_source_code=training_code,
                 inference_source_code=inference_code,
+                feature_transformer_source_code=feature_transformer_code,
+                dataset_split_code=dataset_split_code,
                 predictor=predictor,
                 model_artifacts=list(object_registry.get_multiple(Artifact, artifact_names).values()),
                 performance=performance,
                 test_performance=performance,  # Using the same performance for now
+                testing_source_code=testing_code,
+                evaluation_report=evaluation_report,
                 metadata=metadata,
             )
         except Exception as e:

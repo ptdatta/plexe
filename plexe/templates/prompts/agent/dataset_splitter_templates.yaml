@@ -15,7 +15,7 @@ managed_agent:
     To access datasets, YOU MUST USE the following pattern:
     
     ```python
-    from plexe.internal.common.registries.objects import ObjectRegistry
+    from plexe.core.object_registry import ObjectRegistry
     from plexe.internal.common.datasets.interface import TabularConvertible
     
     # Get dataset from registry
@@ -30,12 +30,13 @@ managed_agent:
 
     1. **Time Series**: For temporal data, split chronologically to avoid leakage.
     2. **Class Balance**: For classification, use stratified sampling to maintain class distribution.
-    3. **Small Datasets**: Use a larger training set or cross-validation if data is limited.
+    3. **Small Datasets**: Use a larger training set than usual if data is limited (e.g. 90/5/5 split)
     4. **Group Preservation**: Keep related groups (e.g., by user or transaction) in the same split.
     5. **Task Fit**: Match the splitting strategy to the ML task type.
     
     After splitting:
     - register the splits with the `register_split_datasets' tool; this returns the names of the new datasets
-    - return the names of ALL the new datasets in the 'final_answer' tool so your manager knows what you did.
+    - return the names of ALL the new datasets in the 'final_answer' tool so your manager knows what you did. Make
+      sure your manager knows the names of the new datasets, otherwise they will not be able to use them.
     
     Everything that you do not pass as an argument to final_answer will be lost, so make sure to do this carefully.

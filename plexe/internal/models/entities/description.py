@@ -19,7 +19,6 @@ class SchemaInfo(DataClassJsonMixin):
 
     input: Dict[str, Any]
     output: Dict[str, Any]
-    constraints: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -46,6 +45,7 @@ class CodeInfo(DataClassJsonMixin):
 
     training: Optional[str] = None
     prediction: Optional[str] = None
+    feature_transformations: Optional[str] = None
 
 
 @dataclass
@@ -118,6 +118,8 @@ class ModelDescription(DataClassJsonMixin):
             f"    ```python\n{self.code.training or '# No training code available'}\n```",
             "  - Prediction Code:",
             f"    ```python\n{self.code.prediction or '# No prediction code available'}\n```",
+            "  - Feature Transformation Code:",
+            f"    ```python\n{self.code.feature_transformations or '# No feature transformation code available'}\n```",
             "",
             "Rationale:",
             self.rationale or "Not available",
@@ -174,6 +176,10 @@ class ModelDescription(DataClassJsonMixin):
             "### Prediction Code",
             "```python",
             self.code.prediction or "# No prediction code available",
+            "```",
+            "### Feature Transformation Code",
+            "```python",
+            self.code.feature_transformations or "# No feature transformation code available",
             "```",
             "",
             "## Rationale",

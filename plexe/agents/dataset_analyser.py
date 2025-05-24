@@ -10,10 +10,10 @@ from typing import List, Callable
 
 from smolagents import LiteLLMModel, CodeAgent
 
-from plexe.config import prompt_templates
+from plexe.config import config, prompt_templates
 from plexe.internal.common.utils.agents import get_prompt_templates
-from plexe.internal.models.tools.datasets import register_eda_report, drop_null_columns
-from plexe.internal.models.tools.schemas import get_raw_dataset_schema
+from plexe.tools.datasets import register_eda_report, drop_null_columns
+from plexe.tools.schemas import get_raw_dataset_schema
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,11 @@ class EdaAgent:
         self.agent = CodeAgent(
             name="DatasetAnalyser",
             description=(
-                "Expert data analyst that performs exploratory data analysis on datasets "
-                "to generate insights and recommendations for ML modeling."
+                "Expert data analyst that performs exploratory data analysis on datasets to generate insights "
+                "and recommendations for ML modeling. Will analyse existing datasets, not create new ones.\n"
+                "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:\n"
+                "- the ML task definition (i.e. 'intent')\n"
+                "- the name of the dataset to use for training"
             ),
             model=LiteLLMModel(model_id=self.model_id),
             tools=[drop_null_columns, register_eda_report, get_raw_dataset_schema],
@@ -70,7 +73,12 @@ class EdaAgent:
                 "plexe.*",
                 "scipy",
                 "scipy.*",
-            ],
+                "sklearn",
+                "sklearn.*",
+                "statsmodels",
+                "statsmodels.*",
+            ]
+            + config.code_generation.authorized_agent_imports,
             prompt_templates=get_prompt_templates("code_agent.yaml", "eda_prompt_templates.yaml"),
         )
 

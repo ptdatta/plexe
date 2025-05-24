@@ -12,11 +12,13 @@
 - [Key Components](#key-components)
   - [EDA Agent](#eda-agent)
   - [Schema Resolver Agent](#schema-resolver-agent)
+  - [Feature Engineering Agent](#feature-engineering-agent)
   - [Dataset Splitter Agent](#dataset-splitter-agent)
   - [Manager Agent (Orchestrator)](#manager-agent-orchestrator)
   - [ML Research Scientist Agent](#ml-research-scientist-agent)
   - [ML Engineer Agent](#ml-engineer-agent)
   - [ML Operations Engineer Agent](#ml-operations-engineer-agent)
+  - [Model Tester Agent](#model-tester-agent)
   - [Object Registry](#object-registry)
   - [Tool System](#tool-system)
 - [Workflow](#workflow)
@@ -41,20 +43,24 @@ graph TD
     User([User]) --> |"Intent & Datasets"| Model["Model Class"]
     
     subgraph "Multi-Agent System"
-        Model --> |"Data Registration"| EDA["EDA Agent"]
-        EDA --> |"Analysis & Reports"| SchemaResolver
-        Model --> |"Schema Resolution"| SchemaResolver["Schema Resolver"]
-        SchemaResolver --> |"Schemas"| Orchestrator
         Model --> |build| Orchestrator["Manager Agent"]
+        Orchestrator --> |"Schema Task"| SchemaResolver["Schema Resolver"]
+        Orchestrator --> |"EDA Task"| EDA["EDA Agent"]
+        Orchestrator --> |"Feature Task"| FE["Feature Engineer"]
         Orchestrator --> |"Plan Task"| MLS["ML Researcher"]
         Orchestrator --> |"Split Task"| DS["Dataset Splitter"]
         Orchestrator --> |"Implement Task"| MLE["ML Engineer"]
         Orchestrator --> |"Inference Task"| MLOPS["ML Operations"]
+        Orchestrator --> |"Testing Task"| Tester["Model Tester"]
         
+        SchemaResolver --> |"Schemas"| Orchestrator
+        EDA --> |"Analysis & Reports"| Orchestrator
+        FE --> |"Transformed Datasets"| Orchestrator
         MLS --> |"Solution Plans"| Orchestrator
         DS --> |"Split Datasets"| Orchestrator
         MLE --> |"Training Code"| Orchestrator
         MLOPS --> |"Inference Code"| Orchestrator
+        Tester --> |"Evaluation Reports"| Orchestrator
     end
     
     subgraph Registry["Object Registry"]
@@ -98,17 +104,17 @@ graph TD
 
 ### EDA Agent
 
-**Class**: `EdaAgent`
+**Class**: `EdaAgent` 
 **Type**: `CodeAgent`
 
 The EDA Agent performs exploratory data analysis on datasets early in the workflow:
 
 ```python
-eda_agent = EdaAgent(
-    model_id=provider_config.research_provider,
+self.eda_agent = EdaAgent(
+    model_id=self.orchestrator_model_id,
     verbose=verbose,
-    chain_of_thought_callable=cot_callable,
-)
+    chain_of_thought_callable=chain_of_thought_callable,
+).agent
 ```
 
 **Responsibilities**:
@@ -126,11 +132,11 @@ eda_agent = EdaAgent(
 The Schema Resolver Agent infers input and output schemas from intent and dataset samples:
 
 ```python
-schema_resolver = SchemaResolverAgent(
-    model_id=provider_config.orchestrator_provider,
+self.schema_resolver_agent = SchemaResolverAgent(
+    model_id=self.orchestrator_model_id,
     verbose=verbose,
-    chain_of_thought_callable=cot_callable,
-)
+    chain_of_thought_callable=chain_of_thought_callable,
+).agent
 ```
 
 **Responsibilities**:
@@ -138,6 +144,29 @@ schema_resolver = SchemaResolverAgent(
 - Inferring appropriate input and output schemas
 - Registering schemas with the Object Registry
 - Providing automatic schema resolution when schemas aren't specified
+
+### Feature Engineering Agent
+
+**Class**: `FeatureEngineeringAgent`
+**Type**: `CodeAgent`
+
+The Feature Engineering Agent transforms raw datasets into optimized features for model training:
+
+```python
+self.feature_engineering_agent = FeatureEngineeringAgent(
+    model_id=self.ml_engineer_model_id,
+    verbose=verbose,
+    chain_of_thought_callable=self.chain_of_thought_callable,
+).agent
+```
+
+**Responsibilities**:
+- Analyzing datasets based on EDA insights
+- Creating feature transformations to improve model performance
+- Handling data cleaning, encoding, and feature creation
+- Preserving data integrity during transformations
+- Registering transformed datasets in the Object Registry
+- Storing transformation code for inclusion in the final model
 
 ### Dataset Splitter Agent
 
@@ -147,11 +176,11 @@ schema_resolver = SchemaResolverAgent(
 The Dataset Splitter Agent handles the intelligent partitioning of datasets:
 
 ```python
-dataset_splitter_agent = DatasetSplitterAgent(
-    model_id=orchestrator_model_id,
+self.dataset_splitter_agent = DatasetSplitterAgent(
+    model_id=self.orchestrator_model_id,
     verbose=verbose,
-    chain_of_thought_callable=chain_of_thought_callable,
-)
+    chain_of_thought_callable=self.chain_of_thought_callable,
+).agent
 ```
 
 **Responsibilities**:
@@ -177,7 +206,16 @@ self.manager_agent = CodeAgent(
         create_input_sample,
         format_final_orchestrator_agent_response,
     ],
-    managed_agents=[self.ml_research_agent, self.dataset_splitter_agent, self.mle_agent, self.mlops_engineer],
+    managed_agents=[
+        self.eda_agent,
+        self.schema_resolver_agent,
+        self.feature_engineering_agent,
+        self.ml_research_agent,
+        self.dataset_splitter_agent,
+        self.mle_agent,
+        self.mlops_engineer,
+        self.model_tester_agent,
+    ],
     add_base_tools=False,
     verbosity_level=self.orchestrator_verbosity,
     additional_authorized_imports=config.code_generation.authorized_agent_imports,
@@ -191,36 +229,23 @@ self.manager_agent = CodeAgent(
 **Responsibilities**:
 - Initializing the problem based on user intent
 - Selecting appropriate metrics
-- Coordinating specialist agents
+- Coordinating specialist agents including schema resolver and EDA agents
 - Making decisions about which solution approach to pursue
 - Collecting and integrating the final model artifacts
 
 ### ML Research Scientist Agent
 
-**Class**: `PlexeAgent.ml_research_agent`  
+**Class**: `ModelPlannerAgent`  
 **Type**: `ToolCallingAgent`
 
 This agent specializes in solution planning and strategy:
 
 ```python
-self.ml_research_agent = ToolCallingAgent(
-    name="MLResearchScientist",
-    description=(
-        "Expert ML researcher that develops detailed solution ideas and plans for ML use cases. "
-        "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
-        "- the ML task definition (i.e. 'intent')"
-        "- input schema for the model"
-        "- output schema for the model"
-        "- the name and comparison method of the metric to optimise"
-        "- the name of the dataset to use for training"
-    ),
-    model=LiteLLMModel(model_id=self.ml_researcher_model_id),
-    tools=[get_dataset_preview, get_eda_report],
-    add_base_tools=False,
-    verbosity_level=self.specialist_verbosity,
-    prompt_templates=get_prompt_templates("toolcalling_agent.yaml", "mls_prompt_templates.yaml"),
-    step_callbacks=[self.chain_of_thought_callable],
-)
+self.ml_research_agent = ModelPlannerAgent(
+    model_id=ml_researcher_model_id,
+    verbose=verbose,
+    chain_of_thought_callable=chain_of_thought_callable,
+).agent
 ```
 
 **Responsibilities**:
@@ -255,34 +280,18 @@ self.mle_agent = ModelTrainerAgent(
 
 ### ML Operations Engineer Agent
 
-**Class**: `PlexeAgent.mlops_engineer`  
+**Class**: `ModelPackagerAgent`  
 **Type**: `CodeAgent`
 
 This agent focuses on productionizing the model through inference code:
 
 ```python
-self.mlops_engineer = CodeAgent(
-    name="MLOperationsEngineer",
-    description=(
-        "Expert ML operations engineer that analyzes training code and creates high-quality production-ready "
-        "inference code for ML models. To work effectively, as part of the 'task' prompt the agent STRICTLY requires:"
-        "- input schema for the model"
-        "- output schema for the model"
-        "- the 'training code id' of the training code produced by the MLEngineer agent"
-    ),
-    model=LiteLLMModel(model_id=self.ml_ops_engineer_model_id),
-    tools=[
-        get_inference_context_tool(self.tool_model_id),
-        validate_inference_code,
-        format_final_mlops_agent_response,
-    ],
-    add_base_tools=False,
-    verbosity_level=self.specialist_verbosity,
-    additional_authorized_imports=config.code_generation.authorized_agent_imports + ["plexe", "plexe.*"],
-    prompt_templates=get_prompt_templates("code_agent.yaml", "mlops_prompt_templates.yaml"),
-    planning_interval=8,
-    step_callbacks=[self.chain_of_thought_callable],
-)
+self.mlops_engineer = ModelPackagerAgent(
+    model_id=self.ml_ops_engineer_model_id,
+    tool_model_id=self.tool_model_id,
+    verbose=verbose,
+    chain_of_thought_callable=self.chain_of_thought_callable,
+).agent
 ```
 
 **Responsibilities**:
@@ -290,6 +299,28 @@ self.mlops_engineer = CodeAgent(
 - Implementing model loading logic
 - Creating input preprocessing and output postprocessing
 - Validating inference code correctness
+
+### Model Tester Agent
+
+**Class**: `ModelTesterAgent`  
+**Type**: `CodeAgent`
+
+This agent focuses on comprehensive testing and evaluation of finalized ML models:
+
+```python
+self.model_tester_agent = ModelTesterAgent(
+    model_id=self.ml_engineer_model_id,
+    verbose=verbose,
+    chain_of_thought_callable=self.chain_of_thought_callable,
+).agent
+```
+
+**Responsibilities**:
+- Evaluating model performance on test datasets
+- Performing quality analysis and robustness testing
+- Generating comprehensive evaluation reports
+- Testing model behavior with edge cases
+- Providing insights about model limitations and strengths
 
 ### Object Registry
 
@@ -308,20 +339,22 @@ class ObjectRegistry:
     """
 
     _instance = None
-    _items = {}
+    _items: Dict[str, Item] = dict()
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ObjectRegistry, cls).__new__(cls)
-            cls._items = {}
+            cls._items = dict()
         return cls._instance
 ```
 
 **Key Features**:
-- Type-safe storage and retrieval
-- Shared access across agents
-- Registration of multiple item types (datasets, artifacts, code, schemas)
+- Type-safe storage and retrieval with URI-based namespacing
+- Singleton pattern ensures shared access across agents
+- Support for immutable objects to prevent modification
+- Registration of multiple item types (datasets, artifacts, code, schemas, EDA reports)
 - Batch operations with register_multiple and get_multiple
+- Deep copy support for immutable items to prevent accidental modifications
 
 ### Tool System
 
@@ -377,41 +410,54 @@ The multi-agent workflow follows these key steps:
    - User creates a `Model` instance with intent and datasets
    - User calls `model.build()` to start the process
 
-2. **Exploratory Data Analysis**:
+2. **Orchestration**:
+   - Manager Agent initializes and coordinates the entire process
+   - Manager Agent tasks specialist agents based on the workflow requirements
+
+3. **Schema Resolution**:
+   - If schemas aren't provided, SchemaResolverAgent infers them
+   - The agent analyzes the problem description and sample data
+   - Schemas are registered in the Object Registry
+
+4. **Exploratory Data Analysis**:
    - EdaAgent analyzes datasets to understand structure and characteristics
    - Generates insights about data patterns, quality issues, and modeling considerations
    - EDA reports are registered in the Object Registry for use by other agents
 
-3. **Schema Resolution**:
-   - If schemas aren't provided, SchemaResolverAgent infers them
-   - The agent can leverage EDA findings to determine appropriate schemas
-   - Schemas are registered in the Object Registry
+5. **Feature Engineering** (Optional):
+   - Feature Engineering Agent transforms raw datasets based on EDA insights
+   - Creates new features, handles encoding, and cleans data
+   - Registers transformed datasets in the Object Registry
+   - Stores transformation code for inclusion in the final model
 
-4. **Orchestration**:
-   - Manager Agent selects metrics and coordinates the process
-   - Manager Agent initializes the solution planning phase
-
-5. **Dataset Splitting**:
+6. **Dataset Splitting**:
    - Dataset Splitter Agent analyzes data characteristics
    - Creates appropriate train/validation/test splits
    - Registers split datasets in the Object Registry
 
-6. **Solution Planning**:
-   - ML Research Scientist proposes solution approaches
-   - Manager Agent evaluates and selects approaches
+7. **Solution Planning**:
+   - ML Research Scientist analyzes the problem and proposes solution approaches
+   - Manager Agent evaluates and selects approaches based on requirements
 
-7. **Model Implementation**:
-   - ML Engineer generates and executes training code
+8. **Model Implementation**:
+   - ML Engineer generates and executes training code based on the solution plan
    - Model artifacts are registered in the Object Registry
-   - Process may iterate through multiple approaches
+   - Training results and performance metrics are captured
 
-8. **Inference Code Generation**:
+9. **Inference Code Generation**:
    - ML Operations Engineer generates compatible inference code
-   - Code is validated with sample inputs
+   - Code is validated with sample inputs for correctness
+   - Predictor instances are registered for testing
 
-9. **Finalization**:
-   - Manager Agent reviews and finalizes the model
-   - All artifacts and code are collected
+10. **Model Testing**:
+   - Model Tester Agent evaluates the finalized model on test data
+   - Comprehensive evaluation reports are generated
+   - Quality analysis and robustness testing are performed
+
+11. **Finalization**:
+   - Manager Agent reviews and finalizes the model using the review tool
+   - All artifacts, code, and evaluation results are collected
+   - Model metadata is extracted and stored
    - Completed model is returned to the user
 
 ## Implementation Details
@@ -421,7 +467,7 @@ The multi-agent workflow follows these key steps:
 The system uses a hierarchical communication pattern:
 
 ```
-User → Model → EDA Agent → Schema Resolver → Manager Agent → Specialist Agents → Manager Agent → Model → User
+User → Model → Manager Agent → Specialist Agents → Manager Agent → Model → User
 ```
 
 Each agent communicates through structured task descriptions and responses:
@@ -561,13 +607,19 @@ class CustomModelValidator(Validator):
 
 ## References
 
-- [PlexeAgent Class Definition](/plexe/internal/agents.py)
+- [PlexeAgent Class Definition](/plexe/agents/agents.py)
 - [Model Class Definition](/plexe/models.py)
 - [EdaAgent Definition](/plexe/agents/dataset_analyser.py)
 - [SchemaResolverAgent Definition](/plexe/agents/schema_resolver.py)
+- [FeatureEngineeringAgent Definition](/plexe/agents/feature_engineer.py)
 - [DatasetSplitterAgent Definition](/plexe/agents/dataset_splitter.py)
 - [ModelTrainerAgent Definition](/plexe/agents/model_trainer.py)
-- [Tool Definitions](/plexe/internal/models/tools/)
-- [Dataset Tools](/plexe/internal/models/tools/datasets.py)
+- [ModelPackagerAgent Definition](/plexe/agents/model_packager.py)
+- [ModelPlannerAgent Definition](/plexe/agents/model_planner.py)
+- [ModelTesterAgent Definition](/plexe/agents/model_tester.py)
+- [Tool Definitions](/plexe/tools/)
+- [Dataset Tools](/plexe/tools/datasets.py)
+- [Validation Tools](/plexe/tools/validation.py)
+- [Testing Tools](/plexe/tools/testing.py)
 - [Executor Implementation](/plexe/internal/models/execution/)
-- [Object Registry](/plexe/internal/common/registries/objects.py)
+- [Object Registry](/plexe/core/object_registry.py)

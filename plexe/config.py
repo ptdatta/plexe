@@ -37,8 +37,11 @@ def is_package_available(package_name: str) -> bool:
 class _Config:
     @dataclass(frozen=True)
     class _FileStorageConfig:
-        model_cache_dir: str = field(default=".smolcache/")
+        cache_dir: str = field(default=".plexecache/")
         model_dir: str = field(default="model_files/")
+        checkpoint_dir: str = field(default="checkpoints/")
+        delete_checkpoints_on_success: bool = field(default=False)
+        keep_checkpoints: int = field(default=3)
 
     @dataclass(frozen=True)
     class _LoggingConfig:
@@ -167,10 +170,16 @@ class _Config:
 @dataclass(frozen=True)
 class _CodeTemplates:
     predictor_interface: str = field(
-        default=Path(importlib.import_module("plexe.internal.models.interfaces.predictor").__file__).read_text()
+        default=Path(importlib.import_module("plexe.core.interfaces.predictor").__file__).read_text()
     )
     predictor_template: str = field(
         default=files(template_module).joinpath("models").joinpath("predictor.tmpl.py").read_text()
+    )
+    feature_transformer_interface: str = field(
+        default=Path(importlib.import_module("plexe.core.interfaces.feature_transformer").__file__).read_text()
+    )
+    feature_transformer_template: str = field(
+        default=files(template_module).joinpath("models").joinpath("feature_transformer.tmpl.py").read_text()
     )
 
 
@@ -301,7 +310,7 @@ class _PromptTemplates:
         datasets: List[str],
         working_dir: str,
         max_iterations: int = None,
-        schema_reasoning: str = None,
+        resume: bool = False,
     ) -> str:
         return self._render(
             "agent/agent_manager_prompt.jinja",
@@ -311,7 +320,7 @@ class _PromptTemplates:
             datasets=datasets,
             working_dir=working_dir,
             max_iterations=max_iterations,
-            schema_reasoning=schema_reasoning,
+            resume=resume,
         )
 
 
