@@ -12,7 +12,7 @@ from smolagents import LiteLLMModel, CodeAgent
 
 from plexe.config import config, prompt_templates
 from plexe.internal.common.utils.agents import get_prompt_templates
-from plexe.tools.datasets import register_eda_report, drop_null_columns
+from plexe.tools.datasets import register_eda_report, drop_null_columns, get_latest_datasets
 from plexe.tools.schemas import get_raw_dataset_schema
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,10 @@ class EdaAgent:
                 "and recommendations for ML modeling. Will analyse existing datasets, not create new ones.\n"
                 "To work effectively, as part of the 'task' prompt the agent STRICTLY requires:\n"
                 "- the ML task definition (i.e. 'intent')\n"
-                "- the name of the dataset to use for training"
+                "- the name of the dataset to be analysed"
             ),
             model=LiteLLMModel(model_id=self.model_id),
-            tools=[drop_null_columns, register_eda_report, get_raw_dataset_schema],
+            tools=[drop_null_columns, register_eda_report, get_raw_dataset_schema, get_latest_datasets],
             add_base_tools=False,
             verbosity_level=self.verbosity,
             # planning_interval=3,
