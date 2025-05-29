@@ -203,7 +203,7 @@ class PlexeAgent:
         object_registry = ObjectRegistry()
         result = self.manager_agent.run(task=task, additional_args=additional_args)
 
-        print(f"Registry contents: {str(object_registry.list())}")
+        print(f"Registry contents:\n\n" f"{json.dumps(object_registry.list(), indent=4)}" f"\n\n")
 
         try:
             # Only log the full result when in verbose mode
@@ -214,10 +214,8 @@ class PlexeAgent:
                 result = json.loads(str(result))
 
             # Extract data from the agent result
-            training_code_id = result.get("training_code_id", "")
-            inference_code_id = result.get("inference_code_id", "")
-            training_code = object_registry.get(Code, training_code_id).code
-            inference_code = object_registry.get(Code, inference_code_id).code
+            training_code = object_registry.get(Code, "best_performing_training_code").code
+            inference_code = object_registry.get(Code, "final_inference_code_for_production").code
 
             # Extract performance metrics
             if "performance" in result and isinstance(result["performance"], dict):
@@ -246,7 +244,7 @@ class PlexeAgent:
             )
 
             # Get model artifacts from registry or result
-            artifact_names = result.get("model_artifact_names", [])
+            artifact_names = object_registry.get(list, "model_artifact_names")
 
             # Model metadata
             metadata = result.get("metadata", {"model_type": "unknown", "framework": "unknown"})
