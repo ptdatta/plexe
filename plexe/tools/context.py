@@ -10,9 +10,11 @@ from pydantic import BaseModel
 from smolagents import tool
 
 from plexe.config import code_templates
+from plexe.core.entities.solution import Solution
 from plexe.internal.common.provider import Provider
 from plexe.core.object_registry import ObjectRegistry
-from plexe.internal.models.entities.code import Code
+from plexe.tools.datasets import create_input_sample
+from plexe.tools.schemas import get_solution_schemas
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +34,32 @@ def get_inference_context_tool(llm_to_use: str) -> Callable:
         """
         object_registry = ObjectRegistry()
 
-        # Retrieve training code
+        # Retrieve the best performing solution
         try:
-            training_code = object_registry.get(Code, "best_performing_training_code").code
+            best_solution = object_registry.get(Solution, "best_performing_solution")
         except Exception as e:
-            raise ValueError(f"Training code with ID 'best_performing_training_code' not found: {str(e)}")
+            raise ValueError(f"Best performing solution not found, has it been selected?: {str(e)}")
+
+        # Retrieve the training code
+        try:
+            training_code = best_solution.training_code
+        except Exception as e:
+            raise ValueError(
+                f"Solution '{best_solution.id}' doesn't have training code, has it been trained?: {str(e)}"
+            )
 
         # Retrieve schemas
         try:
-            input_schema = object_registry.get(dict, "input_schema")
-            output_schema = object_registry.get(dict, "output_schema")
+            schemas = get_solution_schemas("best_performing_solution")
+            input_schema = schemas["input"]
+            output_schema = schemas["output"]
         except Exception as e:
             raise ValueError(f"Failed to retrieve schemas from registry: {str(e)}")
 
         # Retrieve input sample
         try:
+            # Create input sample now that we know schema exists
+            create_input_sample()  # TODO: this tool -> tool dependency will lead to difficult to debug errors
             input_sample = object_registry.get(list, "predictor_input_sample")
         except Exception as e:
             raise ValueError(f"Failed to retrieve input sample: {str(e)}")

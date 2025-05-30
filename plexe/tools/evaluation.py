@@ -8,8 +8,8 @@ from typing import Dict, Callable
 from smolagents import tool
 
 from plexe.internal.common.provider import Provider
-from plexe.internal.models.entities.code import Code
 from plexe.internal.models.generation.review import ModelReviewer
+from plexe.tools.schemas import get_solution_schemas
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ def get_review_finalised_model(llm_to_use: str) -> Callable:
     @tool
     def review_finalised_model(
         intent: str,
-        solution_plan: str,
+        solution_id: str,
     ) -> dict:
         """
         Reviews the entire model and extracts metadata. Use this function once you have completed work on the model, and
@@ -28,61 +28,71 @@ def get_review_finalised_model(llm_to_use: str) -> Callable:
 
         Args:
             intent: The model intent
-            solution_plan: The solution plan explanation based on which the model was implemented
+            solution_id: The solution ID to review
 
         Returns:
             A dictionary containing a summary and review of the model
         """
         from plexe.core.object_registry import ObjectRegistry
+        from plexe.core.entities.solution import Solution
 
         object_registry = ObjectRegistry()
 
         try:
-            input_schema = object_registry.get(dict, "input_schema")
-            output_schema = object_registry.get(dict, "output_schema")
+            schemas = get_solution_schemas(solution_id)
+            input_schema = schemas["input"]
+            output_schema = schemas["output"]
         except Exception:
             raise ValueError("Failed to retrieve schemas. Was schema resolution completed?")
 
         try:
-            training_code = object_registry.get(Code, "best_performing_training_code")
+            solution = object_registry.get(Solution, solution_id)
         except Exception:
-            raise ValueError("Best performing training code not found. Was the best model selected?")
+            raise ValueError(f"Solution with ID '{solution_id}' not found. Was the solution created?")
 
-        try:
-            inference_code = object_registry.get(Code, "final_inference_code_for_production")
-        except Exception:
-            raise ValueError("Inference code not found. Was the inference code produced?")
+        if not solution.training_code:
+            raise ValueError("Training code not found in solution. Was the solution implemented?")
 
+        if not solution.inference_code:
+            raise ValueError("Inference code not found in solution. Was the inference code produced?")
+
+        # Review the model using the ModelReviewer
         reviewer = ModelReviewer(Provider(llm_to_use))
-        return reviewer.review_model(
-            intent, input_schema, output_schema, solution_plan, training_code.code, inference_code.code
+        r = reviewer.review_model(
+            intent, input_schema, output_schema, solution.plan, solution.training_code, solution.inference_code
         )
+
+        # Update the solution with the review
+        solution.review = r
+        object_registry.register(Solution, solution_id, solution, overwrite=True)
+        return r
 
     return review_finalised_model
 
 
 @tool
-def get_model_performances() -> Dict[str, float]:
+def get_solution_performances() -> Dict[str, float]:
     """
-    Returns the performance of all successfully trained models so far. The performances are returned as a dictionary
-    mapping the 'model training ID' to the performance score. Use this function to remind yourself of the performance
-    of all models, so that you can do things such as select the best performing model for deployment.
+    Returns the performance of all successfully trained solutions so far. The performances are returned as a dictionary
+    mapping the 'solution ID' to the performance score. Use this function to remind yourself of the performance
+    of all solutions, so that you can do things such as select the best performing solution for deployment.
 
     Returns:
-        A dictionary mapping model IDs to their performance scores with structure:
+        A dictionary mapping solution IDs to their performance scores with structure:
         {
-            "model_training_id_1": performance_score_1,
-            "model_training_id_2": performance_score_2,
+            "solution_id_1": performance_score_1,
+            "solution_id_2": performance_score_2,
         }
     """
     from plexe.core.object_registry import ObjectRegistry
+    from plexe.core.entities.solution import Solution
 
     object_registry = ObjectRegistry()
     performances = {}
 
-    for code_id in object_registry.list_by_type(Code):
-        code = object_registry.get(Code, code_id)
-        if code.performance is not None:
-            performances[code_id] = code.performance
+    for solution_id in object_registry.list_by_type(Solution):
+        solution = object_registry.get(Solution, solution_id)
+        if solution.performance is not None and solution.performance.value is not None:
+            performances[solution_id] = solution.performance.value
 
     return performances

@@ -11,8 +11,9 @@ from pydantic import BaseModel
 
 from plexe.callbacks import BuildStateInfo
 from plexe.internal.models.callbacks.mlflow import MLFlowCallback
+from plexe.internal.models.entities.artifact import Artifact
 from plexe.internal.models.entities.metric import Metric, MetricComparator, ComparisonMethod
-from plexe.internal.models.entities.node import Node
+from plexe.core.entities.solution import Solution
 
 
 @pytest.fixture
@@ -22,11 +23,11 @@ def setup_env():
     metric = Metric(name="accuracy", value=0.95, comparator=MetricComparator(ComparisonMethod.HIGHER_IS_BETTER))
 
     # Create node with the metric
-    node = Node(
-        solution_plan="Train a random forest model",
+    node = Solution(
+        plan="Train a random forest model",
         performance=metric,
         execution_time=10.5,
-        model_artifacts=["/path/to/artifact.pkl"],
+        model_artifacts=[Artifact.from_path("/path/to/artifact.pkl")],
     )
 
     # Create input/output schemas

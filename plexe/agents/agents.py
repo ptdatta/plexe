@@ -20,19 +20,19 @@ from plexe.agents.model_trainer import ModelTrainerAgent
 from plexe.agents.schema_resolver import SchemaResolverAgent
 from plexe.config import config
 from plexe.core.object_registry import ObjectRegistry
-from plexe.internal.common.utils.agents import get_prompt_templates
 from plexe.internal.models.entities.artifact import Artifact
 from plexe.internal.models.entities.code import Code
 from plexe.internal.models.entities.metric import Metric
 from plexe.internal.models.entities.metric import MetricComparator, ComparisonMethod
+from plexe.core.entities.solution import Solution
 from plexe.core.interfaces.predictor import Predictor
-from plexe.tools.datasets import create_input_sample, get_latest_datasets
-from plexe.tools.evaluation import get_review_finalised_model, get_model_performances
+from plexe.tools.datasets import get_latest_datasets
+from plexe.tools.evaluation import get_review_finalised_model, get_solution_performances
 from plexe.tools.metrics import get_select_target_metric
 from plexe.tools.response_formatting import (
     format_final_orchestrator_agent_response,
 )
-from plexe.tools.training import register_best_training_code
+from plexe.tools.training import register_best_solution
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,10 @@ class PlexeAgent:
         ml_ops_engineer_model_id: str = "anthropic/claude-3-7-sonnet-20250219",
         tool_model_id: str = "openai/gpt-4o",
         verbose: bool = False,
-        max_steps: int = 30,
+        max_steps: int = 50,
         distributed: bool = False,
         chain_of_thought_callable: Optional[Callable] = None,
+        max_solutions: int = 1,
     ):
         """
         Initialize the multi-agent ML engineering system.
@@ -105,6 +106,7 @@ class PlexeAgent:
             model_id=self.ml_researcher_model_id,
             verbose=verbose,
             chain_of_thought_callable=chain_of_thought_callable,
+            max_solutions=max_solutions,
         ).agent
 
         # Create and run the schema resolver agent
@@ -142,6 +144,7 @@ class PlexeAgent:
             distributed=self.distributed,
             verbose=verbose,
             chain_of_thought_callable=self.chain_of_thought_callable,
+            schema_resolver_agent=self.schema_resolver_agent,
         ).agent
 
         # Create predictor builder agent - creates inference code
@@ -150,6 +153,7 @@ class PlexeAgent:
             tool_model_id=self.tool_model_id,
             verbose=verbose,
             chain_of_thought_callable=self.chain_of_thought_callable,
+            schema_resolver_agent=self.schema_resolver_agent,
         ).agent
 
         # Create model tester agent - tests and evaluates the finalized model
@@ -166,10 +170,9 @@ class PlexeAgent:
             tools=[
                 get_select_target_metric(self.tool_model_id),
                 get_review_finalised_model(self.tool_model_id),
-                create_input_sample,
                 get_latest_datasets,
-                get_model_performances,
-                register_best_training_code,
+                get_solution_performances,
+                register_best_solution,
                 format_final_orchestrator_agent_response,
             ],
             managed_agents=[
@@ -186,9 +189,6 @@ class PlexeAgent:
             verbosity_level=self.orchestrator_verbosity,
             additional_authorized_imports=config.code_generation.authorized_agent_imports,
             max_steps=self.max_steps,
-            prompt_templates=get_prompt_templates(
-                base_template_name="code_agent.yaml", override_template_name="manager_prompt_templates.yaml"
-            ),
             planning_interval=7,
             step_callbacks=[self.chain_of_thought_callable],
         )
@@ -203,7 +203,7 @@ class PlexeAgent:
         object_registry = ObjectRegistry()
         result = self.manager_agent.run(task=task, additional_args=additional_args)
 
-        print(f"Registry contents:\n\n" f"{json.dumps(object_registry.list(), indent=4)}" f"\n\n")
+        print(f"Registry contents:\n\n" f"{json.dumps(sorted(object_registry.list()), indent=4)}" f"\n\n")
 
         try:
             # Only log the full result when in verbose mode
@@ -214,8 +214,9 @@ class PlexeAgent:
                 result = json.loads(str(result))
 
             # Extract data from the agent result
-            training_code = object_registry.get(Code, "best_performing_training_code").code
-            inference_code = object_registry.get(Code, "final_inference_code_for_production").code
+            best_solution = object_registry.get(Solution, "best_performing_solution")
+            training_code = best_solution.training_code
+            inference_code = best_solution.inference_code
 
             # Extract performance metrics
             if "performance" in result and isinstance(result["performance"], dict):
@@ -243,9 +244,6 @@ class PlexeAgent:
                 comparator=comparator,
             )
 
-            # Get model artifacts from registry or result
-            artifact_names = object_registry.get(list, "model_artifact_names")
-
             # Model metadata
             metadata = result.get("metadata", {"model_type": "unknown", "framework": "unknown"})
 
@@ -254,7 +252,7 @@ class PlexeAgent:
             exec(inference_code, inference_module.__dict__)
             # Instantiate the predictor class from the loaded module
             predictor_class = getattr(inference_module, "PredictorImplementation")
-            predictor = predictor_class(object_registry.get_all(Artifact).values())
+            predictor = predictor_class(best_solution.model_artifacts)
 
             # Get feature transformer code if available
             feature_transformer_code = None
@@ -279,18 +277,16 @@ class PlexeAgent:
             # Get testing code if available
             testing_code = None
             try:
-                testing_code_obj = object_registry.get(Code, "model_testing_code")
-                if testing_code_obj:
-                    testing_code = testing_code_obj.code
-            except KeyError:
+                testing_code = best_solution.testing_code
+            except Exception:
                 # No testing code found, that's ok
                 pass
 
             # Get evaluation report if available
             evaluation_report = None
             try:
-                evaluation_report = object_registry.get(dict, "model_evaluation_report")
-            except KeyError:
+                evaluation_report = best_solution.model_evaluation_report
+            except Exception:
                 # No evaluation report found, that's ok
                 pass
 
@@ -300,7 +296,7 @@ class PlexeAgent:
                 feature_transformer_source_code=feature_transformer_code,
                 dataset_split_code=dataset_split_code,
                 predictor=predictor,
-                model_artifacts=list(object_registry.get_multiple(Artifact, artifact_names).values()),
+                model_artifacts=best_solution.model_artifacts,
                 performance=performance,
                 test_performance=performance,  # Using the same performance for now
                 testing_source_code=testing_code,
