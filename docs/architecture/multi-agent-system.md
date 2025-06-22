@@ -41,11 +41,11 @@ This approach offers several advantages:
 ```mermaid
 graph TD
     User([User]) --> |"Intent & Datasets"| ModelBuilder["ModelBuilder"]
-    User --> |"Intent & Datasets"| Model["Model Class (deprecated)"]
+    User --> |"Intent & Datasets"| Model["Model Class deprecated"]
     
     subgraph "Multi-Agent System"
         ModelBuilder --> |build| Orchestrator["Manager Agent"]
-        Model --> |build (deprecated)| ModelBuilder
+        Model --> |build deprecated| ModelBuilder
         Orchestrator --> |"Schema Task"| SchemaResolver["Schema Resolver"]
         Orchestrator --> |"EDA Task"| EDA["EDA Agent"]
         Orchestrator --> |"Feature Task"| FE["Feature Engineer"]
